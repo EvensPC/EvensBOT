@@ -1,0 +1,6 @@
+﻿.venv/
+data/pricelist.xlsx
+data/bot.db
+.env
+__pycache__/
+*.pyc
