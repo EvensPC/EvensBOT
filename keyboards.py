@@ -5,13 +5,15 @@ def _btn(text: str, cb: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=cb)
 
 
-def main_menu(catalog) -> InlineKeyboardBuilder:
+def main_menu(catalog, is_admin: bool = False) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     for root in catalog.roots:
         kb.add(_btn(root.name, f"cat:{root.key}"))
     kb.adjust(1)
     kb.row(_btn("Поиск товара", "cmd:search"), _btn("Мой профиль", "cmd:profile"))
     kb.row(_btn("Стать оптовиком", "cmd:wholesale"))
+    if is_admin:
+        kb.row(_btn("⚙️ Админ-панель", "cmd:admin"))
     return kb
 
 
@@ -85,11 +87,18 @@ def wholesale_menu() -> InlineKeyboardBuilder:
     return kb
 
 
+def admin_menu() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn("Обновить список", "cmd:admin"))
+    kb.row(_btn("← В меню", "cmd:menu"))
+    return kb
+
+
 def admin_panel(requests) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     for req in requests:
         kb.row(
-            _btn(f"{req['full_name'] or req['username'] or req['user_id']}", f"cmd:request_opt"),
+            _btn(f"{req['full_name'] or req['username'] or req['user_id']}", "cmd:admin"),
             _btn("✅", f"opt:approve:{req['user_id']}"),
             _btn("❌", f"opt:reject:{req['user_id']}"),
         )

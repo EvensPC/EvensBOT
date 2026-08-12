@@ -51,7 +51,22 @@ async def safe_send(chat_id, text, reply_markup=None):
 
 
 async def send_main_menu(chat_id, text: str):
-    await bot.send_message(chat_id, text, reply_markup=keyboards.main_menu(catalog).as_markup())
+    is_admin = chat_id == config.ADMIN_ID
+    await bot.send_message(chat_id, text, reply_markup=keyboards.main_menu(catalog, is_admin).as_markup())
+
+
+async def send_admin_panel(message: Message | None = None, chat_id=None, edit: bool = True):
+    requests = db.pending_requests()
+    if not requests:
+        text = "Админ-панель\n\nНет заявок на оптовый доступ."
+        markup = keyboards.admin_menu()
+    else:
+        text = "Админ-панель\n\nЗаявки на оптовый доступ:"
+        markup = keyboards.admin_panel(requests)
+    if edit and message is not None:
+        await message.edit_text(text, reply_markup=markup.as_markup())
+    elif chat_id is not None:
+        await bot.send_message(chat_id, text, reply_markup=markup.as_markup())
 
 
 async def refresh_catalog():
@@ -108,6 +123,14 @@ async def cmd_sync(message: Message):
     await message.answer("Обновляю каталог из Google Sheets…")
     await refresh_catalog()
     await message.answer(f"Готово. Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.")
+
+
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("Нет доступа.")
+        return
+    await send_admin_panel(chat_id=message.chat.id, edit=False)
 
 
 @dp.message(Command("wholesale"))
@@ -170,7 +193,13 @@ async def show_search_results(chat_id, results, query, user, page: int = 0):
 async def cb_menu(call: CallbackQuery):
     cmd = call.data.split(":", 1)[1]
     if cmd == "menu":
-        await call.message.edit_text("Главное меню:", reply_markup=keyboards.main_menu(catalog).as_markup())
+        is_admin = call.message.chat.id == config.ADMIN_ID
+        await call.message.edit_text("Главное меню:", reply_markup=keyboards.main_menu(catalog, is_admin).as_markup())
+    elif cmd == "admin":
+        if call.from_user.id != config.ADMIN_ID:
+            await call.answer("Нет доступа", show_alert=True)
+            return
+        await send_admin_panel(message=call.message, edit=True)
     elif cmd == "search":
         await call.message.edit_text("Введите название товара (например: 5060, RTX 4060, i5-12400):")
     elif cmd == "profile":
@@ -312,7 +341,7 @@ async def cb_opt(call: CallbackQuery):
         db.set_role(user_id, "wholesaler")
         await call.message.edit_text(
             f"✅ Пользователь {user['full_name'] or user_id} получил оптовый доступ.",
-            reply_markup=keyboards.main_menu(catalog).as_markup(),
+            reply_markup=keyboards.admin_panel(db.pending_requests()).as_markup() if db.pending_requests() else keyboards.admin_menu().as_markup(),
         )
         await safe_send(
             user_id,
@@ -323,7 +352,7 @@ async def cb_opt(call: CallbackQuery):
         db.clear_opt_request(user_id)
         await call.message.edit_text(
             f"❌ Заявка пользователя {user['full_name'] or user_id} отклонена.",
-            reply_markup=keyboards.main_menu(catalog).as_markup(),
+            reply_markup=keyboards.admin_panel(db.pending_requests()).as_markup() if db.pending_requests() else keyboards.admin_menu().as_markup(),
         )
         await safe_send(user_id, "К сожалению, ваша заявка на оптовый доступ была отклонена.")
     await call.answer()
