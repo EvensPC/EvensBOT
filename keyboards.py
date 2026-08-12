@@ -90,6 +90,7 @@ def wholesale_menu() -> InlineKeyboardBuilder:
 def admin_menu() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     kb.row(_btn("Обновить список", "cmd:admin"))
+    kb.row(_btn("Оптовики", "admin:list"))
     kb.row(_btn("← В меню", "cmd:menu"))
     return kb
 
@@ -102,5 +103,13 @@ def admin_panel(requests) -> InlineKeyboardBuilder:
             _btn("✅", f"opt:approve:{req['user_id']}"),
             _btn("❌", f"opt:reject:{req['user_id']}"),
         )
+    kb.row(_btn("Оптовики", "admin:list"))
+    kb.row(_btn("← В меню", "cmd:menu"))
+    return kb
+
+
+def wholesalers_menu() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn("← В админ-панель", "cmd:admin"))
     kb.row(_btn("← В меню", "cmd:menu"))
     return kb

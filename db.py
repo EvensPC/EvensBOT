@@ -116,5 +116,12 @@ def pending_requests() -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+def wholesalers() -> list[dict]:
+    rows = _backend.execute(
+        "SELECT * FROM users WHERE role = 'wholesaler' ORDER BY user_id"
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
 def clear_opt_request(user_id: int):
     _backend.execute("UPDATE users SET opt_requested = 0 WHERE user_id = ?", (user_id,))

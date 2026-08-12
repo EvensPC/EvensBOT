@@ -417,6 +417,24 @@ async def cb_opt(call: CallbackQuery):
     await call.answer()
 
 
+@dp.callback_query(F.data.startswith("admin:list"))
+async def cb_admin_list(call: CallbackQuery):
+    if call.from_user.id != config.ADMIN_ID:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    users = db.wholesalers()
+    if not users:
+        await call.message.edit_text("Оптовиков пока нет.", reply_markup=keyboards.wholesalers_menu().as_markup())
+    else:
+        lines = [f"🧾 Оптовики ({len(users)}):", ""]
+        for u in users:
+            name = u["full_name"] or u["username"] or "-"
+            uname = f"@{u['username']}" if u["username"] else ""
+            lines.append(f"• {name} {uname}\n  ID: {u['user_id']}")
+        await call.message.edit_text("\n".join(lines), reply_markup=keyboards.wholesalers_menu().as_markup())
+    await call.answer()
+
+
 async def on_startup():
     await refresh_catalog()
     asyncio.create_task(catalog_updater())
