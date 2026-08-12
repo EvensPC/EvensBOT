@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import openpyxl
 import requests
 
-from categories import ROOT_CATEGORIES
+from categories import ROOT_CATEGORIES, EXCLUDED_ROOTS
 
 SPREADSHEET_ID = "1YloYvrGUqWY45khtZUVKbfmAupR1PotJhXUTTTP--JA"
 EXPORT_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=xlsx"
@@ -127,6 +127,8 @@ class Catalog:
             if target is None:
                 continue
             target.products.append(product)
+
+        self.roots = [root for root in self.roots if root.name not in EXCLUDED_ROOTS]
 
         for root in self.roots:
             self._register(root)
