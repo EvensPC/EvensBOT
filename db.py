@@ -37,7 +37,8 @@ def _execute(sql: str, params: tuple = ()) -> sqlite3.Cursor:
 
 
 def get_user(user_id: int):
-    return _execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    row = _execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    return dict(row) if row is not None else None
 
 
 def upsert_user(user_id: int, username: str, full_name: str) -> dict:
