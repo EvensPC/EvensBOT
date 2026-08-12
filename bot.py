@@ -6,7 +6,7 @@ import re
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BotCommand, CallbackQuery, Message
 
 import config
 import db
@@ -19,6 +19,43 @@ logger = logging.getLogger(__name__)
 catalog = Catalog()
 bot: Bot
 dp = Dispatcher()
+
+ui_messages: dict[int, int] = {}  # chat_id -> id последнего UI-сообщения
+
+BOT_COMMANDS = [
+    BotCommand(command="start", description="Запустить бота"),
+    BotCommand(command="menu", description="Главное меню"),
+    BotCommand(command="profile", description="Мой профиль"),
+    BotCommand(command="wholesale", description="Стать оптовиком"),
+    BotCommand(command="admin", description="Админ-панель"),
+]
+
+
+async def delete_message(chat_id: int, message_id: int):
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+
+async def dismiss_ui(chat_id: int, keep_id: int | None = None):
+    old = ui_messages.get(chat_id)
+    if old and old != keep_id:
+        await delete_message(chat_id, old)
+        ui_messages.pop(chat_id, None)
+
+
+async def show_ui(chat_id: int, text: str, markup=None, edit: bool = False):
+    old = ui_messages.get(chat_id)
+    if edit and old:
+        try:
+            await bot.edit_message_text(text, chat_id=chat_id, message_id=old, reply_markup=markup)
+            return
+        except Exception:
+            pass
+    await dismiss_ui(chat_id)
+    msg = await bot.send_message(chat_id, text, reply_markup=markup)
+    ui_messages[chat_id] = msg.message_id
 
 
 def price_for(user: dict, wholesale_price: int) -> int:
@@ -50,9 +87,12 @@ async def safe_send(chat_id, text, reply_markup=None):
         logger.warning("send to %s failed: %s", chat_id, e)
 
 
-async def send_main_menu(chat_id, text: str):
+async def send_main_menu(chat_id, text: str, edit: bool = False, keep_id: int | None = None):
     is_admin = chat_id == config.ADMIN_ID
-    await bot.send_message(chat_id, text, reply_markup=keyboards.main_menu(catalog, is_admin).as_markup())
+    if keep_id is not None:
+        await dismiss_ui(chat_id, keep_id)
+        ui_messages[chat_id] = keep_id
+    await show_ui(chat_id, text, keyboards.main_menu(catalog, is_admin).as_markup(), edit=edit)
 
 
 async def send_admin_panel(message: Message | None = None, chat_id=None, edit: bool = True):
@@ -66,7 +106,7 @@ async def send_admin_panel(message: Message | None = None, chat_id=None, edit: b
     if edit and message is not None:
         await message.edit_text(text, reply_markup=markup.as_markup())
     elif chat_id is not None:
-        await bot.send_message(chat_id, text, reply_markup=markup.as_markup())
+        await show_ui(chat_id, text, markup.as_markup())
 
 
 async def refresh_catalog():
@@ -90,6 +130,7 @@ async def catalog_updater():
 async def cmd_start(message: Message):
     user = await ensure_user(message)
     role_name = "оптовик" if user.get("role") == "wholesaler" else "покупатель"
+    await delete_message(message.chat.id, message.message_id)
     await send_main_menu(
         message.chat.id,
         f"Добро пожаловать, {message.from_user.first_name}!\n"
@@ -101,6 +142,7 @@ async def cmd_start(message: Message):
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message):
     await ensure_user(message)
+    await delete_message(message.chat.id, message.message_id)
     await send_main_menu(message.chat.id, "Главное меню:")
 
 
@@ -108,43 +150,56 @@ async def cmd_menu(message: Message):
 async def cmd_profile(message: Message):
     user = await ensure_user(message)
     role_name = "Оптовый покупатель" if user.get("role") == "wholesaler" else "Розничный покупатель"
-    await message.answer(
+    await delete_message(message.chat.id, message.message_id)
+    await show_ui(
+        message.chat.id,
         f"Ваш профиль:\nID: {user['user_id']}\n"
         f"Имя: {user['full_name'] or '-'}\nСтатус: {role_name}",
-        reply_markup=keyboards.profile_menu().as_markup(),
+        keyboards.profile_menu().as_markup(),
     )
 
 
 @dp.message(Command("sync"))
 async def cmd_sync(message: Message):
     if message.from_user.id != config.ADMIN_ID:
-        await message.answer("Нет доступа.")
+        await delete_message(message.chat.id, message.message_id)
+        await show_ui(message.chat.id, "Нет доступа.")
         return
-    await message.answer("Обновляю каталог из Google Sheets…")
+    await delete_message(message.chat.id, message.message_id)
+    old = ui_messages.get(message.chat.id)
+    await show_ui(message.chat.id, "Обновляю каталог из Google Sheets…")
     await refresh_catalog()
-    await message.answer(f"Готово. Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.")
+    await show_ui(
+        message.chat.id,
+        f"Готово. Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.",
+        edit=True,
+    )
 
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
     if message.from_user.id != config.ADMIN_ID:
-        await message.answer("Нет доступа.")
+        await delete_message(message.chat.id, message.message_id)
+        await show_ui(message.chat.id, "Нет доступа.")
         return
+    await delete_message(message.chat.id, message.message_id)
     await send_admin_panel(chat_id=message.chat.id, edit=False)
 
 
 @dp.message(Command("wholesale"))
 async def cmd_wholesale(message: Message):
     user = await ensure_user(message)
+    await delete_message(message.chat.id, message.message_id)
     if user.get("role") == "wholesaler":
-        await message.answer("Вы уже оптовик.")
+        await show_ui(message.chat.id, "Вы уже оптовик.")
         return
     if user.get("opt_requested"):
-        await message.answer("Ваша заявка уже отправлена и ожидает подтверждения.")
+        await show_ui(message.chat.id, "Ваша заявка уже отправлена и ожидает подтверждения.")
         return
-    await message.answer(
+    await show_ui(
+        message.chat.id,
         "Хотите получить оптовый доступ? Отправьте заявку, и администратор её рассмотрит.",
-        reply_markup=keyboards.wholesale_menu().as_markup(),
+        keyboards.wholesale_menu().as_markup(),
     )
 
 
@@ -169,9 +224,13 @@ async def on_text(message: Message):
     query = message.text.strip()
     if not query:
         return
+    await delete_message(message.chat.id, message.message_id)
     results = search_products(query)
     if not results:
-        await message.answer(f"По запросу «{query}» ничего не найдено.\nПопробуйте изменить запрос.")
+        await show_ui(
+            message.chat.id,
+            f"По запросу «{query}» ничего не найдено.\nПопробуйте изменить запрос.",
+        )
         return
     await show_search_results(message.chat.id, results, query, user)
 
@@ -184,7 +243,7 @@ async def show_search_results(chat_id, results, query, user, page: int = 0):
         price = price_for(user, p.price)
         lines.append(f"• {p.name}\n  {fmt_price(price)} ₽")
     kb = keyboards.search_results(results, page, config.SEARCH_PER_PAGE, query)
-    await bot.send_message(chat_id, "\n".join(lines), reply_markup=kb.as_markup())
+    await show_ui(chat_id, "\n".join(lines), kb.as_markup())
 
 
 # ---------------- Навигация по каталогу ----------------
@@ -384,6 +443,7 @@ async def main():
         logger.error("BOT_TOKEN не задан. Создайте файл .env рядом с ботом или укажите переменные окружения.")
         return
     bot = Bot(token=config.BOT_TOKEN)
+    await bot.set_my_commands(BOT_COMMANDS)
     dp.startup.register(on_startup)
     await asyncio.gather(_run_http_server(), dp.start_polling(bot))
 
