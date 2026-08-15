@@ -341,7 +341,9 @@ async def show_products(call: CallbackQuery, cat, page: int = 0):
         if extra:
             lines.append(extra)
         lines.append("")
-        lines.extend(format_item(p) for p in chunk)
+        for p in chunk:
+            lines.append(format_item(p))
+            lines.append("")
         return "\n".join(lines).rstrip()
 
     full_text = build(cat.products)
