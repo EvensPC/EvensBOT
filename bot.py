@@ -345,8 +345,6 @@ async def show_products(call: CallbackQuery, cat, page: int = 0):
             toks = name.split()
             if common and len(toks) > len(common):
                 name = " ".join(toks[len(common):])
-            if len(name) > 44:
-                name = name[:44].rstrip() + "…"
             price = price_for(user, p.price)
             lines.append(f"{_keycap(i)} {name}")
             lines.append(f"💰 {fmt_price(price)} ₽")
