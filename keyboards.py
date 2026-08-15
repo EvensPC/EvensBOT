@@ -1,5 +1,7 @@
 from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
 
+from pricing import fmt_price, price_for
+
 
 def _btn(text: str, cb: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=cb)
@@ -10,8 +12,8 @@ def main_menu(catalog, is_admin: bool = False) -> InlineKeyboardBuilder:
     for root in catalog.roots:
         kb.add(_btn(root.name, f"cat:{root.key}"))
     kb.adjust(1)
-    kb.row(_btn("Поиск товара", "cmd:search"), _btn("Мой профиль", "cmd:profile"))
-    kb.row(_btn("Стать оптовиком", "cmd:wholesale"))
+    kb.row(_btn("🔍 Поиск товара", "cmd:search"), _btn("👤 Мой профиль", "cmd:profile"))
+    kb.row(_btn("🤝 Стать оптовиком", "cmd:wholesale"))
     if is_admin:
         kb.row(_btn("⚙️ Админ-панель", "cmd:admin"))
     return kb
@@ -30,13 +32,15 @@ def category_menu(cat) -> InlineKeyboardBuilder:
     return kb
 
 
-def products_menu(cat, page: int = 0, per_page: int = 5) -> InlineKeyboardBuilder:
+def products_menu(cat, page: int = 0, per_page: int = 10, user: dict | None = None) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     total = len(cat.products)
     start = page * per_page
     end = min(start + per_page, total)
-    for product in cat.products[start:end]:
-        kb.row(_btn(product.name[:80], f"prod:{product.code}"))
+    for i, product in enumerate(cat.products[start:end], start=start + 1):
+        price = price_for(user, product.price)
+        label = f"{i}. {product.name[:55]} — {fmt_price(price)} ₽"
+        kb.row(_btn(label, f"prod:{product.code}"))
     nav = []
     if page > 0:
         nav.append(_btn("◀", f"pg:{cat.key}:{page - 1}"))
@@ -53,18 +57,19 @@ def products_menu(cat, page: int = 0, per_page: int = 5) -> InlineKeyboardBuilde
     return kb
 
 
-def search_results(results, page: int = 0, per_page: int = 8, query: str = "") -> InlineKeyboardBuilder:
+def search_results(results, page: int = 0, per_page: int = 10, query: str = "", user: dict | None = None) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    total = len(results)
     start = page * per_page
-    end = min(start + per_page, total)
-    for product in results[start:end]:
-        kb.row(_btn(product.name[:80], f"prod:{product.code}"))
+    end = min(start + per_page, len(results))
+    for i, product in enumerate(results[start:end], start=start + 1):
+        price = price_for(user, product.price)
+        label = f"{i}. {product.name[:55]} — {fmt_price(price)} ₽"
+        kb.row(_btn(label, f"prod:{product.code}"))
     nav = []
     if page > 0:
         nav.append(_btn("◀", f"spg:{page - 1}:{query[:40]}"))
-    nav.append(_btn(f"{page + 1}/{max(1, (total + per_page - 1) // per_page)}", f"info:search:{query[:40]}"))
-    if end < total:
+    nav.append(_btn(f"{page + 1}/{max(1, (len(results) + per_page - 1) // per_page)}", f"info:search:{query[:40]}"))
+    if end < len(results):
         nav.append(_btn("▶", f"spg:{page + 1}:{query[:40]}"))
     if nav:
         kb.row(*nav)
@@ -80,16 +85,16 @@ def profile_menu() -> InlineKeyboardBuilder:
 
 def wholesale_menu() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.row(_btn("Запросить оптовый доступ", "cmd:request_opt"))
-    kb.row(_btn("← В меню", "cmd:menu"))
+    kb.row(_btn("📨 Запросить оптовый доступ", "cmd:request_opt"))
+    kb.row(_btn("🏠 Меню", "cmd:menu"))
     return kb
 
 
 def admin_menu() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.row(_btn("Обновить список", "cmd:admin"))
-    kb.row(_btn("Оптовики", "admin:list"))
-    kb.row(_btn("← В меню", "cmd:menu"))
+    kb.row(_btn("🔄 Обновить список", "cmd:admin"))
+    kb.row(_btn("🧾 Оптовики", "admin:list"))
+    kb.row(_btn("🏠 Меню", "cmd:menu"))
     return kb
 
 
@@ -101,13 +106,13 @@ def admin_panel(requests) -> InlineKeyboardBuilder:
             _btn("✅", f"opt:approve:{req['user_id']}"),
             _btn("❌", f"opt:reject:{req['user_id']}"),
         )
-    kb.row(_btn("Оптовики", "admin:list"))
-    kb.row(_btn("← В меню", "cmd:menu"))
+    kb.row(_btn("🧾 Оптовики", "admin:list"))
+    kb.row(_btn("🏠 Меню", "cmd:menu"))
     return kb
 
 
 def wholesalers_menu() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.row(_btn("← В админ-панель", "cmd:admin"))
-    kb.row(_btn("← В меню", "cmd:menu"))
+    kb.row(_btn("⬅️ В админ-панель", "cmd:admin"))
+    kb.row(_btn("🏠 Меню", "cmd:menu"))
     return kb

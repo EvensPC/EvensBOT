@@ -12,6 +12,7 @@ import config
 import db
 import keyboards
 from catalog import Catalog, fetch_xlsx_bytes
+from pricing import fmt_price, price_for
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -20,9 +21,7 @@ catalog = Catalog()
 bot: Bot
 dp = Dispatcher()
 
-menu_msg: dict[int, int] = {}           # chat_id -> id постоянного главного меню
-temp_msg: dict[int, int] = {}           # chat_id -> id текущего временного сообщения
-temp_tasks: dict[int, asyncio.Task] = {}  # chat_id -> таймер автоудаления
+ui_msg: dict[int, int] = {}  # chat_id -> id единственного сообщения бота в чате
 
 BOT_COMMANDS = [
     BotCommand(command="start", description="Запустить бота"),
@@ -40,92 +39,43 @@ async def delete_message(chat_id: int, message_id: int):
         pass
 
 
-def _cancel_temp_timer(chat_id: int):
-    task = temp_tasks.pop(chat_id, None)
-    if task:
-        task.cancel()
-
-
-def _arm_temp_timer(chat_id: int, message_id: int):
-    _cancel_temp_timer(chat_id)
-
-    async def _run():
-        try:
-            await asyncio.sleep(config.TEMP_MSG_TTL)
-            if temp_msg.get(chat_id) == message_id:
-                temp_msg.pop(chat_id, None)
-                await delete_message(chat_id, message_id)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            temp_tasks.pop(chat_id, None)
-
-    temp_tasks[chat_id] = asyncio.create_task(_run())
-
-
-async def _delete_temp(chat_id: int):
-    _cancel_temp_timer(chat_id)
-    mid = temp_msg.pop(chat_id, None)
-    if mid:
-        await delete_message(chat_id, mid)
-
-
-async def show_menu(chat_id: int, text: str):
-    """Постоянное главное меню (не удаляется автоматически)."""
-    markup = keyboards.main_menu(catalog, chat_id == config.ADMIN_ID).as_markup()
-    mid = menu_msg.get(chat_id)
+async def render(chat_id: int, text: str, markup=None):
+    """Показывает содержимое в единственном сообщении чата (правит его, либо создаёт)."""
+    mid = ui_msg.get(chat_id)
     if mid is not None:
         try:
             await bot.edit_message_text(text, chat_id=chat_id, message_id=mid, reply_markup=markup)
             return
         except Exception:
             pass
+        await delete_message(chat_id, mid)
     msg = await bot.send_message(chat_id, text, reply_markup=markup)
-    menu_msg[chat_id] = msg.message_id
+    ui_msg[chat_id] = msg.message_id
 
 
-async def open_temp(chat_id: int, text: str, markup=None):
-    """Отправляет временное сообщение (автоудаление через TTL)."""
-    await _delete_temp(chat_id)
-    msg = await bot.send_message(chat_id, text, reply_markup=markup)
-    temp_msg[chat_id] = msg.message_id
-    _arm_temp_timer(chat_id, msg.message_id)
+async def render_call(call: CallbackQuery, text: str, markup=None):
+    """Редактирует сообщение, на котором нажата кнопка (оно же — единственное сообщение чата)."""
+    try:
+        await call.message.edit_text(text, reply_markup=markup)
+    except Exception:
+        mid = ui_msg.get(call.message.chat.id)
+        if mid:
+            await delete_message(call.message.chat.id, mid)
+        msg = await bot.send_message(call.message.chat.id, text, reply_markup=markup)
+        ui_msg[call.message.chat.id] = msg.message_id
+        return
+    ui_msg[call.message.chat.id] = call.message.message_id
 
 
-async def go_menu(chat_id: int, text: str = "Главное меню:"):
-    await _delete_temp(chat_id)
-    await show_menu(chat_id, text)
-
-
-async def render_window(call: CallbackQuery, text: str, markup=None):
-    """Редактирует временное окно в месте, либо открывает новое (если клик был по главному меню)."""
-    chat_id = call.message.chat.id
-    if call.message.message_id != menu_msg.get(chat_id):
-        try:
-            await call.message.edit_text(text, reply_markup=markup)
-            temp_msg[chat_id] = call.message.message_id
-            _arm_temp_timer(chat_id, call.message.message_id)
-            return
-        except Exception:
-            pass
-    await open_temp(chat_id, text, markup)
+async def show_main_menu(chat_id: int, text: str = "Главное меню:"):
+    await render(chat_id, text, keyboards.main_menu(catalog, chat_id == config.ADMIN_ID).as_markup())
 
 
 def admin_panel_data():
     requests = db.pending_requests()
     if not requests:
-        return "Админ-панель\n\nНет заявок на оптовый доступ.", keyboards.admin_menu().as_markup()
-    return "Админ-панель\n\nЗаявки на оптовый доступ:", keyboards.admin_panel(requests).as_markup()
-
-
-def price_for(user: dict, wholesale_price: int) -> int:
-    if user and user.get("role") == "wholesaler":
-        return wholesale_price
-    return round(wholesale_price * config.RETAIL_MARKUP)
-
-
-def fmt_price(value: int) -> str:
-    return f"{value:,}".replace(",", " ")
+        return "⚙️ Админ-панель\n\nНет заявок на оптовый доступ.", keyboards.admin_menu().as_markup()
+    return "⚙️ Админ-панель\n\nЗаявки на оптовый доступ:", keyboards.admin_panel(requests).as_markup()
 
 
 async def ensure_user(message: Message) -> dict:
@@ -165,7 +115,7 @@ async def cmd_start(message: Message):
     user = await ensure_user(message)
     role_name = "оптовик" if user.get("role") == "wholesaler" else "покупатель"
     await delete_message(message.chat.id, message.message_id)
-    await show_menu(
+    await show_main_menu(
         message.chat.id,
         f"🛒 Каталог товаров\n\n"
         f"Добро пожаловать, {message.from_user.first_name}! Ваш статус: {role_name}.\n"
@@ -177,7 +127,7 @@ async def cmd_start(message: Message):
 async def cmd_menu(message: Message):
     await ensure_user(message)
     await delete_message(message.chat.id, message.message_id)
-    await go_menu(message.chat.id)
+    await show_main_menu(message.chat.id)
 
 
 @dp.message(Command("profile"))
@@ -185,7 +135,7 @@ async def cmd_profile(message: Message):
     user = await ensure_user(message)
     role_name = "Оптовый покупатель" if user.get("role") == "wholesaler" else "Розничный покупатель"
     await delete_message(message.chat.id, message.message_id)
-    await open_temp(
+    await render(
         message.chat.id,
         f"👤 Ваш профиль\n\n"
         f"ID: {user['user_id']}\nИмя: {user['full_name'] or '-'}\nСтатус: {role_name}",
@@ -197,32 +147,23 @@ async def cmd_profile(message: Message):
 async def cmd_sync(message: Message):
     if message.from_user.id != config.ADMIN_ID:
         await delete_message(message.chat.id, message.message_id)
-        await open_temp(message.chat.id, "⛔️ Нет доступа.")
+        await render(message.chat.id, "⛔️ Нет доступа.")
         return
     await delete_message(message.chat.id, message.message_id)
-    await open_temp(message.chat.id, "🔄 Обновляю каталог из Google Sheets…")
+    await render(message.chat.id, "🔄 Обновляю каталог из Google Sheets…")
     await refresh_catalog()
-    text = f"✅ Готово. Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}."
-    mid = temp_msg.get(message.chat.id)
-    if mid:
-        try:
-            await bot.edit_message_text(text, chat_id=message.chat.id, message_id=mid)
-            _arm_temp_timer(message.chat.id, mid)
-            return
-        except Exception:
-            pass
-    await open_temp(message.chat.id, text)
+    await render(message.chat.id, f"✅ Готово. Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.")
 
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
     if message.from_user.id != config.ADMIN_ID:
         await delete_message(message.chat.id, message.message_id)
-        await open_temp(message.chat.id, "⛔️ Нет доступа.")
+        await render(message.chat.id, "⛔️ Нет доступа.")
         return
     await delete_message(message.chat.id, message.message_id)
     text, markup = admin_panel_data()
-    await open_temp(message.chat.id, text, markup)
+    await render(message.chat.id, text, markup)
 
 
 @dp.message(Command("wholesale"))
@@ -230,12 +171,12 @@ async def cmd_wholesale(message: Message):
     user = await ensure_user(message)
     await delete_message(message.chat.id, message.message_id)
     if user.get("role") == "wholesaler":
-        await open_temp(message.chat.id, "✅ Вы уже оптовик.")
+        await render(message.chat.id, "✅ Вы уже оптовик.")
         return
     if user.get("opt_requested"):
-        await open_temp(message.chat.id, "⏳ Ваша заявка уже отправлена и ожидает подтверждения.")
+        await render(message.chat.id, "⏳ Ваша заявка уже отправлена и ожидает подтверждения.")
         return
-    await open_temp(
+    await render(
         message.chat.id,
         "🤝 Хотите получить оптовый доступ?\nОтправьте заявку, администратор её рассмотрит.",
         keyboards.wholesale_menu().as_markup(),
@@ -266,26 +207,23 @@ async def on_text(message: Message):
     await delete_message(message.chat.id, message.message_id)
     results = search_products(query)
     if not results:
-        await open_temp(
+        await render(
             message.chat.id,
             f"🔍 По запросу «{query}» ничего не найдено.\nПопробуйте изменить запрос.",
         )
         return
-    await show_search_results(call=None, chat_id=message.chat.id, results=results, query=query, user=user)
+    await show_search_results(message.chat.id, results, query, user)
 
 
-async def show_search_results(call, chat_id, results, query, user, page: int = 0):
+async def show_search_results(chat_id, results, query, user, page: int = 0):
+    markup = keyboards.search_results(results, page, config.SEARCH_PER_PAGE, query, user)
+    total = len(results)
     start = page * config.SEARCH_PER_PAGE
-    chunk = results[start : start + config.SEARCH_PER_PAGE]
-    lines = [f"🔍 Результаты по запросу «{query}»:", f"Найдено: {len(results)}", ""]
-    for i, p in enumerate(chunk, start=start + 1):
-        price = price_for(user, p.price)
-        lines.append(f"{i}. {p.name}\n   💰 {fmt_price(price)} ₽")
-    markup = keyboards.search_results(results, page, config.SEARCH_PER_PAGE, query)
-    if call is not None:
-        await render_window(call, "\n".join(lines), markup.as_markup())
-    else:
-        await open_temp(chat_id, "\n".join(lines), markup.as_markup())
+    end = min(start + config.SEARCH_PER_PAGE, total)
+    text = f"🔍 Результаты по запросу «{query}»\nНайдено: {total}"
+    if start < total:
+        text += f"\nСтраница {page + 1}/{max(1, (total + config.SEARCH_PER_PAGE - 1) // config.SEARCH_PER_PAGE)}"
+    await render(chat_id, text, markup.as_markup())
 
 
 # ---------------- Навигация по каталогу ----------------
@@ -294,19 +232,19 @@ async def show_search_results(call, chat_id, results, query, user, page: int = 0
 async def cb_menu(call: CallbackQuery):
     cmd = call.data.split(":", 1)[1]
     if cmd == "menu":
-        await go_menu(call.message.chat.id)
+        await show_main_menu(call.message.chat.id)
     elif cmd == "admin":
         if call.from_user.id != config.ADMIN_ID:
             await call.answer("⛔️ Нет доступа", show_alert=True)
             return
         text, markup = admin_panel_data()
-        await render_window(call, text, markup)
+        await render_call(call, text, markup)
     elif cmd == "search":
-        await render_window(call, "🔍 Введите название товара\n(например: 5060, RTX 4060, i5-12400):")
+        await render_call(call, "🔍 Введите название товара\n(например: 5060, RTX 4060, i5-12400):")
     elif cmd == "profile":
         user = db.get_user(call.from_user.id)
         role_name = "Оптовый покупатель" if user and user["role"] == "wholesaler" else "Розничный покупатель"
-        await render_window(
+        await render_call(
             call,
             f"👤 Ваш профиль\n\n"
             f"ID: {call.from_user.id}\nИмя: {user['full_name'] if user else '-'}\nСтатус: {role_name}",
@@ -315,19 +253,19 @@ async def cb_menu(call: CallbackQuery):
     elif cmd == "wholesale":
         user = db.get_user(call.from_user.id)
         if user and user["role"] == "wholesaler":
-            await render_window(call, "✅ Вы уже оптовик.")
+            await render_call(call, "✅ Вы уже оптовик.")
             return
         if user and user["opt_requested"]:
-            await render_window(call, "⏳ Ваша заявка уже отправлена и ожидает подтверждения.")
+            await render_call(call, "⏳ Ваша заявка уже отправлена и ожидает подтверждения.")
             return
-        await render_window(
+        await render_call(
             call,
             "🤝 Хотите получить оптовый доступ?\nОтправьте заявку, администратор её рассмотрит.",
             keyboards.wholesale_menu().as_markup(),
         )
     elif cmd == "request_opt":
         db.request_opt(call.from_user.id)
-        await render_window(call, "📨 Заявка на оптовый доступ отправлена. Ожидайте подтверждения.")
+        await render_call(call, "📨 Заявка на оптовый доступ отправлена. Ожидайте подтверждения.")
         if config.ADMIN_ID:
             await safe_send(
                 config.ADMIN_ID,
@@ -346,9 +284,11 @@ async def cb_category(call: CallbackQuery):
         await call.answer("Категория не найдена", show_alert=True)
         return
     if cat.children:
-        text = f"📁 {cat.path}\n\nВыберите подкатегорию:"
-        markup = keyboards.category_menu(cat)
-        await render_window(call, text, markup.as_markup())
+        await render_call(
+            call,
+            f"📁 {cat.path}\n\nВыберите подкатегорию:",
+            keyboards.category_menu(cat).as_markup(),
+        )
     elif cat.products:
         await show_products(call, cat)
     else:
@@ -360,14 +300,12 @@ async def cb_category(call: CallbackQuery):
 async def show_products(call: CallbackQuery, cat, page: int = 0):
     user = db.get_user(call.from_user.id)
     total = len(cat.products)
-    start = page * config.PRICE_PER_PAGE
-    chunk = cat.products[start : start + config.PRICE_PER_PAGE]
-    lines = [f"📁 {cat.path}", f"Товаров: {total}", ""]
-    for i, p in enumerate(chunk, start=start + 1):
-        price = price_for(user, p.price)
-        lines.append(f"{i}. {p.name}\n   💰 {fmt_price(price)} ₽")
-    markup = keyboards.products_menu(cat, page, config.PRICE_PER_PAGE)
-    await render_window(call, "\n".join(lines), markup.as_markup())
+    pages = max(1, (total + config.PRICE_PER_PAGE - 1) // config.PRICE_PER_PAGE)
+    text = f"📁 {cat.path}\nТоваров: {total}"
+    if pages > 1:
+        text += f"\nСтраница {page + 1}/{pages}"
+    markup = keyboards.products_menu(cat, page, config.PRICE_PER_PAGE, user)
+    await render_call(call, text, markup.as_markup())
 
 
 @dp.callback_query(F.data.startswith("pg:"))
@@ -405,8 +343,8 @@ async def cb_product(call: CallbackQuery):
         f"Цена: {fmt_price(price)} ₽"
     )
     kb = keyboards.InlineKeyboardBuilder()
-    kb.row(keyboards.InlineKeyboardButton(text="🏠 В меню", callback_data="cmd:menu"))
-    await render_window(call, text, kb.as_markup())
+    kb.row(keyboards.InlineKeyboardButton(text="🏠 Меню", callback_data="cmd:menu"))
+    await render_call(call, text, kb.as_markup())
     await call.answer()
 
 
@@ -420,7 +358,7 @@ async def cb_search_page(call: CallbackQuery):
     if not results:
         await call.answer("Ничего не найдено", show_alert=True)
         return
-    await show_search_results(call=call, chat_id=call.message.chat.id, results=results, query=query, user=user, page=page)
+    await show_search_results(call.message.chat.id, results, query, user, page)
     await call.answer()
 
 
@@ -448,7 +386,7 @@ async def cb_opt(call: CallbackQuery):
         db.clear_opt_request(user_id)
         await safe_send(user_id, "К сожалению, ваша заявка на оптовый доступ была отклонена.")
     text, markup = admin_panel_data()
-    await render_window(call, text, markup)
+    await render_call(call, text, markup)
     await call.answer()
 
 
@@ -459,14 +397,14 @@ async def cb_admin_list(call: CallbackQuery):
         return
     users = db.wholesalers()
     if not users:
-        await render_window(call, "Оптовиков пока нет.", keyboards.wholesalers_menu().as_markup())
+        await render_call(call, "Оптовиков пока нет.", keyboards.wholesalers_menu().as_markup())
     else:
         lines = [f"🧾 Оптовики ({len(users)}):", ""]
         for u in users:
             name = u["full_name"] or u["username"] or "-"
             uname = f"@{u['username']}" if u["username"] else ""
             lines.append(f"• {name} {uname}\n  ID: {u['user_id']}")
-        await render_window(call, "\n".join(lines), keyboards.wholesalers_menu().as_markup())
+        await render_call(call, "\n".join(lines), keyboards.wholesalers_menu().as_markup())
     await call.answer()
 
 
