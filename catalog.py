@@ -48,15 +48,21 @@ class Catalog:
         self.roots: list[Category] = []
         self.all_products: list[Product] = []
         self._index: dict[str, Category] = {}
+        self._product_cat: dict[str, Category] = {}
 
     def _register(self, cat: Category):
         self._index[cat.key] = cat
+        for p in cat.products:
+            self._product_cat[p.code] = cat
         self.all_products.extend(cat.products)
         for child in cat.children:
             self._register(child)
 
     def get(self, key: str) -> Category | None:
         return self._index.get(key)
+
+    def category_for(self, code: str) -> Category | None:
+        return self._product_cat.get(code)
 
     @staticmethod
     def _find_open_parent(stack):
@@ -76,6 +82,7 @@ class Catalog:
         self.roots = []
         self.all_products = []
         self._index = {}
+        self._product_cat = {}
 
         stack: list[Category] = []
         current_root: Category | None = None
