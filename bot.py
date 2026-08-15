@@ -302,31 +302,61 @@ async def cb_category(call: CallbackQuery):
     await call.answer()
 
 
+_KEYCAPS = {str(d): f"{d}\ufe0f\u20e3" for d in range(10)}
+_SEP_LINE = "┈" * 18
+
+
+def _keycap(n: int) -> str:
+    return "".join(_KEYCAPS[d] for d in str(n))
+
+
+def _common_prefix_tokens(names: list[str]) -> list[str]:
+    """Общее начало названий товаров (напр. «Видеокарта»), чтобы убрать повтор."""
+    tokens = [n.split() for n in names if n.strip()]
+    if len(tokens) < 3:
+        return []
+    common = []
+    for parts in zip(*tokens):
+        if all(p == parts[0] for p in parts):
+            common.append(parts[0])
+        else:
+            break
+    return common[:3]
+
+
 async def show_products(call: CallbackQuery, cat, page: int = 0):
     user = db.get_user(call.from_user.id)
     total = len(cat.products)
-    header = f"🎮 {cat.name} · {total}"
+    header = f"🎮 {cat.name}\n📦 Товаров: {total}"
 
     if not cat.products:
         await call.answer("Здесь пока нет товаров", show_alert=True)
         return
 
-    def item_lines(chunk):
-        lines = []
-        for p in chunk:
+    common = _common_prefix_tokens([p.name for p in cat.products])
+
+    def build(chunk, start_idx, extra: str | None = None):
+        lines = [header]
+        if extra:
+            lines.append(extra)
+        lines.append("")
+        for i, p in enumerate(chunk, start=start_idx):
+            name = p.name
+            toks = name.split()
+            if common and len(toks) > len(common):
+                name = " ".join(toks[len(common):])
+            if len(name) > 44:
+                name = name[:44].rstrip() + "…"
             price = price_for(user, p.price)
-            price_str = f"{fmt_price(price)} ₽"
-            max_line = 46  # запас, чтобы цена не переносилась
-            budget = max_line - len("🔹 ") - len(" — ") - len(price_str)
-            name = p.name[:budget].rstrip()
-            if len(p.name) > budget:
-                name = name + "…"
-            lines.append(f"🔹 {name} — {price_str}")
-        return lines
+            lines.append(f"{_keycap(i)} {name}")
+            lines.append(f"💰 {fmt_price(price)} ₽")
+            lines.append(_SEP_LINE)
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
-    # Полный список без страниц, если влезает в лимит сообщения
-    full_text = header + "\n\n" + "\n".join(item_lines(cat.products))
+    full_text = build(cat.products, 1)
 
+    # Полный список, если влезает в лимит сообщения
     if len(full_text) <= 4000:
         markup = keyboards.products_menu(cat, page=0, per_page=0, user=user)
         await render_call(call, full_text, markup.as_markup())
@@ -337,10 +367,9 @@ async def show_products(call: CallbackQuery, cat, page: int = 0):
     pages = max(1, (total + per_page - 1) // per_page)
     start = page * per_page
     chunk = cat.products[start : start + per_page]
-    lines = [header, f"Страница {page + 1}/{pages}", ""]
-    lines += item_lines(chunk)
+    text = build(chunk, start + 1, f"Страница {page + 1}/{pages}")
     markup = keyboards.products_menu(cat, page, per_page, user)
-    await render_call(call, "\n".join(lines), markup.as_markup())
+    await render_call(call, text, markup.as_markup())
 
 
 @dp.callback_query(F.data.startswith("pg:"))
