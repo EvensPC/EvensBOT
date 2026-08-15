@@ -7,12 +7,14 @@ def _btn(text: str, cb: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=cb)
 
 
-def main_menu(catalog, is_admin: bool = False) -> InlineKeyboardBuilder:
+def main_menu(catalog, is_admin: bool = False, cart_count: int = 0) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     for root in catalog.roots:
         kb.add(_btn(root.name, f"cat:{root.key}"))
     kb.adjust(1)
-    kb.row(_btn("🔍 Поиск товара", "cmd:search"), _btn("👤 Мой профиль", "cmd:profile"))
+    cart_label = f"🛒 Корзина ({cart_count})" if cart_count else "🛒 Корзина"
+    kb.row(_btn("🔍 Поиск товара", "cmd:search"), _btn(cart_label, "cart:view"))
+    kb.row(_btn("👤 Мой профиль", "cmd:profile"))
     kb.row(_btn("🤝 Стать оптовиком", "cmd:wholesale"))
     if is_admin:
         kb.row(_btn("⚙️ Админ-панель", "cmd:admin"))
@@ -124,5 +126,49 @@ def admin_panel(requests) -> InlineKeyboardBuilder:
 def wholesalers_menu() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     kb.row(_btn("⬅️ В админ-панель", "cmd:admin"))
+    kb.row(_btn("🏠 Меню", "cmd:menu"))
+    return kb
+
+
+# ---------------- Корзина ----------------
+
+def product_menu(product, back_cb: str) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn("🛒 В корзину", f"cart:add:{product.code}"))
+    kb.row(_btn("← Назад", back_cb), _btn("🏠 Меню", "cmd:menu"))
+    kb.row(_btn("🛒 Моя корзина", "cart:view"))
+    return kb
+
+
+def cart_menu(items, total) -> InlineKeyboardBuilder:
+    """items: список (code, name, price, qty)."""
+    kb = InlineKeyboardBuilder()
+    if items:
+        for code, name, price, qty in items:
+            sub = fmt_price(price * qty)
+            label = f"{name[:38]} · {qty} шт · {sub} ₽"
+            kb.row(
+                _btn("➖", f"cart:dec:{code}"),
+                _btn(label, f"prod:{code}"),
+                _btn("➕", f"cart:inc:{code}"),
+            )
+        kb.row(_btn("🧹 Очистить корзину", "cart:clear"))
+        kb.row(_btn("✅ Оформить заказ", "order:start"))
+    else:
+        kb.row(_btn("🛍 Вернуться в каталог", "cmd:menu"))
+    kb.row(_btn("🏠 Меню", "cmd:menu"))
+    return kb
+
+
+# ---------------- Оформление заказа ----------------
+
+def order_menu() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn("🏠 Меню", "cmd:menu"))
+    return kb
+
+
+def checkout_menu() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
     kb.row(_btn("🏠 Меню", "cmd:menu"))
     return kb

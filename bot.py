@@ -6,6 +6,8 @@ import re
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BotCommand, CallbackQuery, Message
 
 import config
@@ -26,6 +28,7 @@ ui_msg: dict[int, int] = {}  # chat_id -> id единственного сооб
 BOT_COMMANDS = [
     BotCommand(command="start", description="Запустить бота"),
     BotCommand(command="menu", description="Главное меню"),
+    BotCommand(command="cart", description="Моя корзина"),
     BotCommand(command="profile", description="Мой профиль"),
     BotCommand(command="wholesale", description="Стать оптовиком"),
     BotCommand(command="admin", description="Админ-панель"),
@@ -68,7 +71,11 @@ async def render_call(call: CallbackQuery, text: str, markup=None):
 
 
 async def show_main_menu(chat_id: int, text: str = "Главное меню:"):
-    await render(chat_id, text, keyboards.main_menu(catalog, chat_id == config.ADMIN_ID).as_markup())
+    await render(
+        chat_id,
+        text,
+        keyboards.main_menu(catalog, chat_id == config.ADMIN_ID, db.cart_count(chat_id)).as_markup(),
+    )
 
 
 def admin_panel_data():
@@ -124,10 +131,19 @@ async def cmd_start(message: Message):
 
 
 @dp.message(Command("menu"))
-async def cmd_menu(message: Message):
+async def cmd_menu(message: Message, state: FSMContext):
     await ensure_user(message)
+    await state.clear()
     await delete_message(message.chat.id, message.message_id)
     await show_main_menu(message.chat.id)
+
+
+@dp.message(Command("cart"))
+async def cmd_cart(message: Message, state: FSMContext):
+    await ensure_user(message)
+    await state.clear()
+    await delete_message(message.chat.id, message.message_id)
+    await show_cart(message.chat.id)
 
 
 @dp.message(Command("profile"))
@@ -197,9 +213,11 @@ def search_products(query: str, limit: int = 200):
 
 
 @dp.message(F.text)
-async def on_text(message: Message):
+async def on_text(message: Message, state: FSMContext):
     if message.text.startswith("/"):
         return
+    if await state.get_state() is not None:
+        return  # идёт оформление заказа — текст обработают FSM-обработчики
     user = await ensure_user(message)
     query = message.text.strip()
     if not query:
@@ -229,14 +247,15 @@ async def show_search_results(chat_id, results, query, user, page: int = 0):
 # ---------------- Навигация по каталогу ----------------
 
 @dp.callback_query(F.data.startswith("cmd:"))
-async def cb_menu(call: CallbackQuery):
+async def cb_menu(call: CallbackQuery, state: FSMContext):
     cmd = call.data.split(":", 1)[1]
     if cmd == "menu":
+        await state.clear()
         # Редактируем текущее сообщение, а не создаём новое
         await render_call(
             call,
             "Главное меню:",
-            keyboards.main_menu(catalog, call.from_user.id == config.ADMIN_ID).as_markup(),
+            keyboards.main_menu(catalog, call.from_user.id == config.ADMIN_ID, db.cart_count(call.from_user.id)).as_markup(),
         )
     elif cmd == "admin":
         if call.from_user.id != config.ADMIN_ID:
@@ -352,25 +371,196 @@ async def cb_product(call: CallbackQuery):
         await call.answer("Товар не найден", show_alert=True)
         return
     price = price_for(user, product.price)
-    head = f"📦 {product.name}\n\nАртикул: {product.code}\nЦена: {fmt_price(price)} ₽"
+    text = f"📦 {product.name}\n\nАртикул: {product.code}\nЦена: {fmt_price(price)} ₽"
     if product.link:
         from urllib.parse import urlencode
 
         tg_url = "https://t.me/share/url?" + urlencode(
             {"url": product.link, "text": f"{product.name} — {fmt_price(price)} ₽"}
         )
-        head += f"\n\n⬇️ [Открыть ссылку]({tg_url})"
-    text = head
-    kb = keyboards.InlineKeyboardBuilder()
+        text += f"\n\n⬇️ [Открыть ссылку]({tg_url})"
     cat = catalog.category_for(product.code)
-    if cat is not None:
-        back_cb = f"cat:{cat.key}"
-    else:
-        back_cb = "cmd:menu"
-    kb.row(keyboards.InlineKeyboardButton(text="🏠 Меню", callback_data="cmd:menu"))
-    kb.row(keyboards.InlineKeyboardButton(text="Вернуться назад", callback_data=back_cb))
-    await render_call(call, text, kb.as_markup())
+    back_cb = f"cat:{cat.key}" if cat is not None else "cmd:menu"
+    await render_call(call, text, keyboards.product_menu(product, back_cb).as_markup())
     await call.answer()
+
+
+# ---------------- Корзина и заказы ----------------
+
+def cart_lines(user, cart_items) -> tuple[list[tuple], int]:
+    """Возвращает (items, total), items = [(code, name, price, qty)]."""
+    items = []
+    total = 0
+    for code, qty in cart_items:
+        product = None
+        for p in catalog.all_products:
+            if p.code == code:
+                product = p
+                break
+        if product is None:
+            continue
+        price = price_for(user, product.price)
+        items.append((code, product.name, price, qty))
+        total += price * qty
+    return items, total
+
+
+async def show_cart(chat_id: int):
+    user = db.get_user(chat_id)
+    items, total = cart_lines(user, db.get_cart(chat_id))
+    if not items:
+        await render(
+            chat_id,
+            "🛒 Ваша корзина пуста.\n\nДобавьте товары из каталога.",
+            keyboards.cart_menu([], 0).as_markup(),
+        )
+        return
+    lines = ["🛒 Корзина:", ""]
+    for i, (code, name, price, qty) in enumerate(items, 1):
+        lines.append(f"{i}. {name}\n   {fmt_price(price)} ₽ × {qty} = {fmt_price(price * qty)} ₽")
+    lines.append(f"\n💰 Итого: {fmt_price(total)} ₽")
+    await render(chat_id, "\n".join(lines), keyboards.cart_menu(items, total).as_markup())
+
+
+@dp.callback_query(F.data.startswith("cart:"))
+async def cb_cart(call: CallbackQuery):
+    action = call.data.split(":", 1)[1]
+    uid = call.from_user.id
+    if action == "view":
+        await show_cart(call.message.chat.id)
+    elif action == "clear":
+        db.clear_cart(uid)
+        await show_cart(call.message.chat.id)
+    elif action.startswith("add:"):
+        code = action.split(":", 1)[1]
+        db.add_to_cart(uid, code)
+        await call.answer("🛒 Товар добавлен в корзину")
+    elif action.startswith("inc:"):
+        code = action.split(":", 1)[1]
+        db.set_cart_qty(uid, code, db.get_cart_qty(uid, code) + 1)
+        await show_cart(call.message.chat.id)
+    elif action.startswith("dec:"):
+        code = action.split(":", 1)[1]
+        db.set_cart_qty(uid, code, db.get_cart_qty(uid, code) - 1)
+        await show_cart(call.message.chat.id)
+    elif action.startswith("del:"):
+        code = action.split(":", 1)[1]
+        db.remove_from_cart(uid, code)
+        await show_cart(call.message.chat.id)
+    await call.answer()
+
+
+class OrderState(StatesGroup):
+    name = State()
+    phone = State()
+    address = State()
+    comment = State()
+
+
+@dp.callback_query(F.data == "order:start")
+async def cb_order_start(call: CallbackQuery, state: FSMContext):
+    uid = call.from_user.id
+    user = db.get_user(uid)
+    items, total = cart_lines(user, db.get_cart(uid))
+    if not items:
+        await call.answer("Корзина пуста", show_alert=True)
+        return
+    await state.update_data(order_items=items, order_total=total)
+    await state.set_state(OrderState.name)
+    await render_call(
+        call,
+        f"✅ Оформление заказа\n\nСумма: {fmt_price(total)} ₽\n\nВведите ваше имя:",
+        keyboards.checkout_menu().as_markup(),
+    )
+    await call.answer()
+
+
+@dp.message(OrderState.name)
+async def order_get_name(message: Message, state: FSMContext):
+    name = message.text.strip()
+    await delete_message(message.chat.id, message.message_id)
+    if not name:
+        await render(message.chat.id, "Пожалуйста, введите имя:")
+        return
+    await state.update_data(name=name)
+    await state.set_state(OrderState.phone)
+    await render(message.chat.id, "📞 Введите ваш номер телефона:", keyboards.checkout_menu().as_markup())
+
+
+@dp.message(OrderState.phone)
+async def order_get_phone(message: Message, state: FSMContext):
+    phone = message.text.strip()
+    await delete_message(message.chat.id, message.message_id)
+    if not phone:
+        await render(message.chat.id, "Пожалуйста, введите номер телефона:")
+        return
+    await state.update_data(phone=phone)
+    await state.set_state(OrderState.address)
+    await render(message.chat.id, "📍 Введите адрес доставки:", keyboards.checkout_menu().as_markup())
+
+
+@dp.message(OrderState.address)
+async def order_get_address(message: Message, state: FSMContext):
+    address = message.text.strip()
+    await delete_message(message.chat.id, message.message_id)
+    if not address:
+        await render(message.chat.id, "Пожалуйста, введите адрес доставки:")
+        return
+    await state.update_data(address=address)
+    await state.set_state(OrderState.comment)
+    await render(
+        message.chat.id,
+        "💬 Комментарий к заказу (можете отправить «-», чтобы пропустить):",
+        keyboards.checkout_menu().as_markup(),
+    )
+
+
+@dp.message(OrderState.comment)
+async def order_get_comment(message: Message, state: FSMContext):
+    comment = message.text.strip()
+    await delete_message(message.chat.id, message.message_id)
+    data = await state.get_data()
+    items = data["order_items"]
+    total = data["order_total"]
+    order_id = db.create_order(
+        message.from_user.id,
+        data.get("name", ""),
+        data.get("phone", ""),
+        data.get("address", ""),
+        comment if comment and comment != "-" else "",
+        total,
+    )
+    for code, name, price, qty in items:
+        db.add_order_item(order_id, code, name, price, qty)
+    db.clear_cart(message.from_user.id)
+    await state.clear()
+    await render(
+        message.chat.id,
+        f"✅ Заказ №{order_id} оформлен!\n\nСумма: {fmt_price(total)} ₽\nМы свяжемся с вами для подтверждения.",
+        keyboards.checkout_menu().as_markup(),
+    )
+    await notify_admin_order(order_id, message.from_user.id, items, total, data)
+
+
+async def notify_admin_order(order_id, user_id, items, total, data):
+    if not config.ADMIN_ID:
+        return
+    user = db.get_user(user_id)
+    lines = [
+        "🆕 Новый заказ!",
+        f"№ {order_id}",
+        "",
+        f"👤 {data.get('name', '')} (@{user['username'] or '-'} ID:{user_id})",
+        f"📞 {data.get('phone', '')}",
+        f"📍 {data.get('address', '')}",
+        f"💬 {data.get('comment', '') or '-'}",
+        "",
+        "Позиции:",
+    ]
+    for i, (code, name, price, qty) in enumerate(items, 1):
+        lines.append(f"{i}. {name}\n   {fmt_price(price)} ₽ × {qty} = {fmt_price(price * qty)} ₽")
+    lines.append(f"\n💰 Итого: {fmt_price(total)} ₽")
+    await safe_send(config.ADMIN_ID, "\n".join(lines))
 
 
 @dp.callback_query(F.data.startswith("spg:"))

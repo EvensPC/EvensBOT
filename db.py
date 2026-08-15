@@ -28,6 +28,41 @@ class _SqliteBackend:
                 )
                 """
             )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cart_items (
+                    user_id INTEGER NOT NULL,
+                    code TEXT NOT NULL,
+                    qty INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (user_id, code)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    name TEXT,
+                    phone TEXT,
+                    address TEXT,
+                    comment TEXT,
+                    total INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_items (
+                    order_id INTEGER NOT NULL,
+                    code TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    price INTEGER NOT NULL,
+                    qty INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
             self._conn.commit()
         return self._conn
 
@@ -36,6 +71,12 @@ class _SqliteBackend:
             cur = self.conn().execute(sql, params)
             self.conn().commit()
             return cur
+
+    def lastrowid(self, sql: str, params: tuple = ()):
+        with self._lock:
+            cur = self.conn().execute(sql, params)
+            self.conn().commit()
+            return cur.lastrowid
 
 
 class _PostgresBackend:
@@ -54,6 +95,41 @@ class _PostgresBackend:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cart_items (
+                user_id BIGINT NOT NULL,
+                code TEXT NOT NULL,
+                qty INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (user_id, code)
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS orders (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                created_at TEXT NOT NULL,
+                name TEXT,
+                phone TEXT,
+                address TEXT,
+                comment TEXT,
+                total INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_items (
+                order_id BIGINT NOT NULL,
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                price INTEGER NOT NULL,
+                qty INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
         self._conn.commit()
 
     def execute(self, sql: str, params: tuple = ()):
@@ -69,6 +145,13 @@ class _PostgresBackend:
         cur = self._conn.execute(sql, mapped)
         self._conn.commit()
         return cur
+
+    def lastrowid(self, sql: str, params: tuple = ()):
+        sql = sql.replace("?", "%s")
+        mapped = tuple(_map(p) for p in params)
+        cur = self._conn.execute(sql + " RETURNING id", mapped)
+        self._conn.commit()
+        return cur.fetchone()[0]
 
 
 _backend = _PostgresBackend(DATABASE_URL) if DATABASE_URL else _SqliteBackend()
@@ -125,3 +208,91 @@ def wholesalers() -> list[dict]:
 
 def clear_opt_request(user_id: int):
     _backend.execute("UPDATE users SET opt_requested = 0 WHERE user_id = ?", (user_id,))
+
+
+# ---------------- Корзина ----------------
+
+def add_to_cart(user_id: int, code: str, qty: int = 1):
+    _backend.execute(
+        """
+        INSERT INTO cart_items (user_id, code, qty) VALUES (?, ?, ?)
+        ON CONFLICT(user_id, code) DO UPDATE SET qty = qty + excluded.qty
+        """,
+        (user_id, code, qty),
+    )
+
+
+def set_cart_qty(user_id: int, code: str, qty: int):
+    if qty <= 0:
+        _backend.execute("DELETE FROM cart_items WHERE user_id = ? AND code = ?", (user_id, code))
+    else:
+        _backend.execute(
+            "UPDATE cart_items SET qty = ? WHERE user_id = ? AND code = ?",
+            (qty, user_id, code),
+        )
+
+
+def remove_from_cart(user_id: int, code: str):
+    _backend.execute("DELETE FROM cart_items WHERE user_id = ? AND code = ?", (user_id, code))
+
+
+def clear_cart(user_id: int):
+    _backend.execute("DELETE FROM cart_items WHERE user_id = ?", (user_id,))
+
+
+def get_cart(user_id: int) -> list[tuple[str, int]]:
+    rows = _backend.execute(
+        "SELECT code, qty FROM cart_items WHERE user_id = ? ORDER BY code", (user_id,)
+    ).fetchall()
+    return [(r["code"], r["qty"]) for r in rows]
+
+
+def get_cart_qty(user_id: int, code: str) -> int:
+    row = _backend.execute(
+        "SELECT qty FROM cart_items WHERE user_id = ? AND code = ?", (user_id, code)
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def cart_count(user_id: int) -> int:
+    row = _backend.execute(
+        "SELECT COALESCE(SUM(qty), 0) FROM cart_items WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+# ---------------- Заказы ----------------
+
+def create_order(user_id: int, name: str, phone: str, address: str, comment: str, total: int) -> int:
+    from datetime import datetime, timezone
+
+    cur = _backend.lastrowid(
+        """
+        INSERT INTO orders (user_id, created_at, name, phone, address, comment, total)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, datetime.now(timezone.utc).isoformat(), name, phone, address, comment, total),
+    )
+    return cur
+
+
+def add_order_item(order_id: int, code: str, name: str, price: int, qty: int):
+    _backend.execute(
+        "INSERT INTO order_items (order_id, code, name, price, qty) VALUES (?, ?, ?, ?, ?)",
+        (order_id, code, name, price, qty),
+    )
+
+
+def get_order(order_id: int) -> dict | None:
+    row = _backend.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def get_order_items(order_id: int) -> list[dict]:
+    rows = _backend.execute(
+        "SELECT code, name, price, qty FROM order_items WHERE order_id = ?",
+        (order_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
