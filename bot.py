@@ -302,14 +302,6 @@ async def cb_category(call: CallbackQuery):
     await call.answer()
 
 
-_KEYCAPS = {str(d): f"{d}\ufe0f\u20e3" for d in range(10)}
-_SEP_LINE = "┈" * 18
-
-
-def _keycap(n: int) -> str:
-    return "".join(_KEYCAPS[d] for d in str(n))
-
-
 def _common_prefix_tokens(names: list[str]) -> list[str]:
     """Общее начало названий товаров (напр. «Видеокарта»), чтобы убрать повтор."""
     tokens = [n.split() for n in names if n.strip()]
@@ -327,7 +319,7 @@ def _common_prefix_tokens(names: list[str]) -> list[str]:
 async def show_products(call: CallbackQuery, cat, page: int = 0):
     user = db.get_user(call.from_user.id)
     total = len(cat.products)
-    header = f"🎮 {cat.name}\n📦 Товаров: {total}"
+    header = f"🎮 {cat.name} · {total}"
 
     if not cat.products:
         await call.answer("Здесь пока нет товаров", show_alert=True)
@@ -346,10 +338,12 @@ async def show_products(call: CallbackQuery, cat, page: int = 0):
             if common and len(toks) > len(common):
                 name = " ".join(toks[len(common):])
             price = price_for(user, p.price)
-            lines.append(f"{_keycap(i)} {name}")
-            lines.append(f"💰 {fmt_price(price)} ₽")
-            lines.append(_SEP_LINE)
-            lines.append("")
+            price_str = f"{fmt_price(price)} ₽"
+            max_line = 46  # запас, чтобы цена не переносилась
+            budget = max_line - len("🔹 ") - len(" — ") - len(price_str)
+            if len(name) > budget:
+                name = name[:budget].rstrip() + "…"
+            lines.append(f"🔹 {name} — {price_str}")
         return "\n".join(lines).rstrip()
 
     full_text = build(cat.products, 1)
