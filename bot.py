@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+from html import escape
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
@@ -39,29 +40,29 @@ async def delete_message(chat_id: int, message_id: int):
         pass
 
 
-async def render(chat_id: int, text: str, markup=None):
+async def render(chat_id: int, text: str, markup=None, parse_mode=None):
     """Показывает содержимое в единственном сообщении чата (правит его, либо создаёт)."""
     mid = ui_msg.get(chat_id)
     if mid is not None:
         try:
-            await bot.edit_message_text(text, chat_id=chat_id, message_id=mid, reply_markup=markup)
+            await bot.edit_message_text(text, chat_id=chat_id, message_id=mid, reply_markup=markup, parse_mode=parse_mode)
             return
         except Exception:
             pass
         await delete_message(chat_id, mid)
-    msg = await bot.send_message(chat_id, text, reply_markup=markup)
+    msg = await bot.send_message(chat_id, text, reply_markup=markup, parse_mode=parse_mode)
     ui_msg[chat_id] = msg.message_id
 
 
-async def render_call(call: CallbackQuery, text: str, markup=None):
+async def render_call(call: CallbackQuery, text: str, markup=None, parse_mode=None):
     """Редактирует сообщение, на котором нажата кнопка (оно же — единственное сообщение чата)."""
     try:
-        await call.message.edit_text(text, reply_markup=markup)
+        await call.message.edit_text(text, reply_markup=markup, parse_mode=parse_mode)
     except Exception:
         mid = ui_msg.get(call.message.chat.id)
         if mid:
             await delete_message(call.message.chat.id, mid)
-        msg = await bot.send_message(call.message.chat.id, text, reply_markup=markup)
+        msg = await bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode=parse_mode)
         ui_msg[call.message.chat.id] = msg.message_id
         return
     ui_msg[call.message.chat.id] = call.message.message_id
@@ -319,7 +320,6 @@ def _common_prefix_tokens(names: list[str]) -> list[str]:
 async def show_products(call: CallbackQuery, cat, page: int = 0):
     user = db.get_user(call.from_user.id)
     total = len(cat.products)
-    header = f"🎮 {cat.name} · {total}"
 
     if not cat.products:
         await call.answer("Здесь пока нет товаров", show_alert=True)
@@ -327,28 +327,29 @@ async def show_products(call: CallbackQuery, cat, page: int = 0):
 
     common = _common_prefix_tokens([p.name for p in cat.products])
 
-    def build(chunk, start_idx, extra: str | None = None):
-        lines = [header]
+    def format_item(p) -> str:
+        name = p.name
+        toks = name.split()
+        if common and len(toks) > len(common):
+            name = " ".join(toks[len(common):])
+        name = escape(name)
+        price = fmt_price(price_for(user, p.price))
+        return f"🔹 {name} — <code>{price}\u00A0₽</code>"
+
+    def build(chunk, extra: str | None = None):
+        lines = [f"🎮 <b>{escape(cat.name)}</b> · {total}"]
         if extra:
             lines.append(extra)
         lines.append("")
-        for i, p in enumerate(chunk, start=start_idx):
-            name = p.name
-            toks = name.split()
-            if common and len(toks) > len(common):
-                name = " ".join(toks[len(common):])
-            price = price_for(user, p.price)
-            lines.append(f"🔹 {name} — {fmt_price(price)} ₽")
-            lines.append("┈" * 18)
-            lines.append("")
+        lines.extend(format_item(p) for p in chunk)
         return "\n".join(lines).rstrip()
 
-    full_text = build(cat.products, 1)
+    full_text = build(cat.products)
 
     # Полный список, если влезает в лимит сообщения
     if len(full_text) <= 4000:
         markup = keyboards.products_menu(cat, page=0, per_page=0, user=user)
-        await render_call(call, full_text, markup.as_markup())
+        await render_call(call, full_text, markup.as_markup(), parse_mode="HTML")
         return
 
     # Очень большая подгруппа — постранично
@@ -356,9 +357,9 @@ async def show_products(call: CallbackQuery, cat, page: int = 0):
     pages = max(1, (total + per_page - 1) // per_page)
     start = page * per_page
     chunk = cat.products[start : start + per_page]
-    text = build(chunk, start + 1, f"Страница {page + 1}/{pages}")
+    text = build(chunk, f"Страница {page + 1}/{pages}")
     markup = keyboards.products_menu(cat, page, per_page, user)
-    await render_call(call, text, markup.as_markup())
+    await render_call(call, text, markup.as_markup(), parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("pg:"))

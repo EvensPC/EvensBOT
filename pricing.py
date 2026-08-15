@@ -8,4 +8,4 @@ def price_for(user: dict | None, wholesale_price: int) -> int:
 
 
 def fmt_price(value: int) -> str:
-    return f"{value:,}".replace(",", " ")
+    return f"{value:,}".replace(",", "\u00A0")
