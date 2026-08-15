@@ -26,7 +26,7 @@ def category_menu(cat) -> InlineKeyboardBuilder:
         back_cb = f"cat:{cat.parent.key}"
     else:
         back_cb = "cmd:menu"
-    kb.row(_btn("← Назад", back_cb))
+    kb.row(_btn("← Назад", back_cb), _btn("🏠 Меню", "cmd:menu"))
     return kb
 
 
@@ -35,22 +35,21 @@ def products_menu(cat, page: int = 0, per_page: int = 5) -> InlineKeyboardBuilde
     total = len(cat.products)
     start = page * per_page
     end = min(start + per_page, total)
-    kb.row(_btn(f"{cat.name} ({total} шт.)", f"info:{cat.key}"))
     for product in cat.products[start:end]:
         kb.row(_btn(product.name[:80], f"prod:{product.code}"))
     nav = []
     if page > 0:
-        nav.append(_btn("←", f"pg:{cat.key}:{page - 1}"))
+        nav.append(_btn("◀", f"pg:{cat.key}:{page - 1}"))
     nav.append(_btn(f"{page + 1}/{max(1, (total + per_page - 1) // per_page)}", f"info:{cat.key}"))
     if end < total:
-        nav.append(_btn("→", f"pg:{cat.key}:{page + 1}"))
+        nav.append(_btn("▶", f"pg:{cat.key}:{page + 1}"))
     if nav:
         kb.row(*nav)
     if cat.parent is not None:
         back_cb = f"cat:{cat.parent.key}"
     else:
         back_cb = "cmd:menu"
-    kb.row(_btn("← Назад", back_cb))
+    kb.row(_btn("← Назад", back_cb), _btn("🏠 Меню", "cmd:menu"))
     return kb
 
 
@@ -59,24 +58,23 @@ def search_results(results, page: int = 0, per_page: int = 8, query: str = "") -
     total = len(results)
     start = page * per_page
     end = min(start + per_page, total)
-    kb.row(_btn(f"Найдено: {total}", f"info:search:{query[:40]}"))
     for product in results[start:end]:
         kb.row(_btn(product.name[:80], f"prod:{product.code}"))
     nav = []
     if page > 0:
-        nav.append(_btn("←", f"spg:{page - 1}:{query[:40]}"))
+        nav.append(_btn("◀", f"spg:{page - 1}:{query[:40]}"))
     nav.append(_btn(f"{page + 1}/{max(1, (total + per_page - 1) // per_page)}", f"info:search:{query[:40]}"))
     if end < total:
-        nav.append(_btn("→", f"spg:{page + 1}:{query[:40]}"))
+        nav.append(_btn("▶", f"spg:{page + 1}:{query[:40]}"))
     if nav:
         kb.row(*nav)
-    kb.row(_btn("← В меню", "cmd:menu"))
+    kb.row(_btn("🏠 Меню", "cmd:menu"))
     return kb
 
 
 def profile_menu() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.row(_btn("← В меню", "cmd:menu"))
+    kb.row(_btn("🏠 Меню", "cmd:menu"))
     return kb
 
 
