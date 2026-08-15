@@ -338,12 +338,9 @@ async def show_products(call: CallbackQuery, cat, page: int = 0):
             if common and len(toks) > len(common):
                 name = " ".join(toks[len(common):])
             price = price_for(user, p.price)
-            price_str = f"{fmt_price(price)} ₽"
-            max_line = 46  # запас, чтобы цена не переносилась
-            budget = max_line - len("🔹 ") - len(" — ") - len(price_str)
-            if len(name) > budget:
-                name = name[:budget].rstrip() + "…"
-            lines.append(f"🔹 {name} — {price_str}")
+            lines.append(f"🔹 {name} — {fmt_price(price)} ₽")
+            lines.append("┈" * 18)
+            lines.append("")
         return "\n".join(lines).rstrip()
 
     full_text = build(cat.products, 1)
