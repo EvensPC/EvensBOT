@@ -317,6 +317,44 @@ def _common_prefix_tokens(names: list[str]) -> list[str]:
     return common[:3]
 
 
+def _is_article_token(t: str) -> bool:
+    """Артикул: есть цифра и (дефис ИЛИ длинный капс-код)."""
+    if not any(c.isdigit() for c in t) or not any(c.isalpha() for c in t):
+        return False
+    if "-" in t:
+        return True
+    return t.isupper() and len(t) >= 6
+
+
+def _is_filler_token(t: str) -> bool:
+    """Короткое слово-капс внутри артикула (OC, ICE, SFF...)."""
+    return not any(c.isdigit() for c in t) and t.isupper() and len(t) <= 5
+
+
+def _strip_article(name: str) -> str:
+    """Убирает артикул в конце названия, если он есть."""
+    toks = name.split()
+    n = len(toks)
+    idx = n
+    seen_article = False
+    for i in range(n - 1, -1, -1):
+        t = toks[i]
+        if _is_article_token(t):
+            seen_article = True
+            idx = i
+        elif seen_article and _is_filler_token(t):
+            # включаем слово-капс только если слева есть ещё артикул (сэндвич)
+            if any(_is_article_token(x) for x in toks[:i]):
+                idx = i
+            else:
+                break
+        else:
+            break
+    if idx == n:
+        return name
+    return " ".join(toks[:idx])
+
+
 async def show_products(call: CallbackQuery, cat, page: int = 0):
     user = db.get_user(call.from_user.id)
     total = len(cat.products)
@@ -332,8 +370,15 @@ async def show_products(call: CallbackQuery, cat, page: int = 0):
         toks = name.split()
         if common and len(toks) > len(common):
             name = " ".join(toks[len(common):])
-        name = escape(name)
         price = fmt_price(price_for(user, p.price))
+        # Максимальная ширина строки с учётом цены, чтобы не переносилось
+        max_line = 52
+        budget = max_line - len("🔹 ") - len(" — ") - len(price) - len(" ₽")
+        # Убираем артикул ТОЛЬКО если без него название укладывается в строку
+        stripped = _strip_article(name)
+        if len(name) > budget and len(stripped) <= budget:
+            name = stripped
+        name = escape(name)
         return f"🔹 {name} — <code>{price}\u00A0₽</code>"
 
     def build(chunk, extra: str | None = None):
