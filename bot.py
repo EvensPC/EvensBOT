@@ -5,7 +5,7 @@ import re
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BotCommand, CallbackQuery, Message
@@ -212,12 +212,10 @@ def search_products(query: str, limit: int = 200):
     return results
 
 
-@dp.message(F.text)
+@dp.message(F.text, StateFilter(None))
 async def on_text(message: Message, state: FSMContext):
     if message.text.startswith("/"):
         return
-    if await state.get_state() is not None:
-        return  # идёт оформление заказа — текст обработают FSM-обработчики
     user = await ensure_user(message)
     query = message.text.strip()
     if not query:
