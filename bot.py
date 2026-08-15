@@ -300,12 +300,34 @@ async def cb_category(call: CallbackQuery):
 async def show_products(call: CallbackQuery, cat, page: int = 0):
     user = db.get_user(call.from_user.id)
     total = len(cat.products)
-    pages = max(1, (total + config.PRICE_PER_PAGE - 1) // config.PRICE_PER_PAGE)
-    text = f"📁 {cat.path}\nТоваров: {total}"
-    if pages > 1:
-        text += f"\nСтраница {page + 1}/{pages}"
-    markup = keyboards.products_menu(cat, page, config.PRICE_PER_PAGE, user)
-    await render_call(call, text, markup.as_markup())
+
+    def item_lines(chunk, start_idx):
+        lines = []
+        for i, p in enumerate(chunk, start=start_idx):
+            price = price_for(user, p.price)
+            lines.append(f"{i}. {p.name}")
+            lines.append(f"      💰 {fmt_price(price)} ₽")
+        return lines
+
+    # Полный список без страниц, если влезает в лимит сообщения
+    full_lines = [f"📁 {cat.path}", f"Товаров: {total}", ""]
+    full_lines += item_lines(cat.products, 1)
+    full_text = "\n".join(full_lines)
+
+    if len(full_text) <= 4000:
+        markup = keyboards.products_menu(cat, user=user)
+        await render_call(call, full_text, markup.as_markup())
+        return
+
+    # Очень большая подгруппа — постранично
+    per_page = config.PRICE_PER_PAGE
+    pages = max(1, (total + per_page - 1) // per_page)
+    start = page * per_page
+    chunk = cat.products[start : start + per_page]
+    lines = [f"📁 {cat.path}", f"Товаров: {total}", f"Страница {page + 1}/{pages}", ""]
+    lines += item_lines(chunk, start + 1)
+    markup = keyboards.products_menu(cat, page, per_page, user)
+    await render_call(call, "\n".join(lines), markup.as_markup())
 
 
 @dp.callback_query(F.data.startswith("pg:"))

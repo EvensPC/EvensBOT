@@ -32,22 +32,30 @@ def category_menu(cat) -> InlineKeyboardBuilder:
     return kb
 
 
-def products_menu(cat, page: int = 0, per_page: int = 10, user: dict | None = None) -> InlineKeyboardBuilder:
+def products_menu(cat, page: int = 0, per_page: int = 0, user: dict | None = None) -> InlineKeyboardBuilder:
+    """Кнопки-номера товаров. per_page=0 — полный список без страниц."""
     kb = InlineKeyboardBuilder()
     total = len(cat.products)
-    start = page * per_page
-    end = min(start + per_page, total)
-    for i, product in enumerate(cat.products[start:end], start=start + 1):
-        price = price_for(user, product.price)
-        label = f"{i}. {product.name[:55]} — {fmt_price(price)} ₽"
-        kb.row(_btn(label, f"prod:{product.code}"))
+    if per_page:
+        start = page * per_page
+        chunk = cat.products[start : start + per_page]
+        start_idx = start + 1
+        pages = max(1, (total + per_page - 1) // per_page)
+    else:
+        start = 0
+        chunk = cat.products
+        start_idx = 1
+        pages = 1
+    for i, product in enumerate(chunk, start=start_idx):
+        kb.add(_btn(str(i), f"prod:{product.code}"))
+    kb.adjust(5)
     nav = []
-    if page > 0:
-        nav.append(_btn("◀", f"pg:{cat.key}:{page - 1}"))
-    nav.append(_btn(f"{page + 1}/{max(1, (total + per_page - 1) // per_page)}", f"info:{cat.key}"))
-    if end < total:
-        nav.append(_btn("▶", f"pg:{cat.key}:{page + 1}"))
-    if nav:
+    if pages > 1:
+        if page > 0:
+            nav.append(_btn("◀", f"pg:{cat.key}:{page - 1}"))
+        nav.append(_btn(f"{page + 1}/{pages}", f"info:{cat.key}"))
+        if start + per_page < total:
+            nav.append(_btn("▶", f"pg:{cat.key}:{page + 1}"))
         kb.row(*nav)
     if cat.parent is not None:
         back_cb = f"cat:{cat.parent.key}"
