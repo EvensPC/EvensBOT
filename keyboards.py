@@ -45,10 +45,12 @@ def products_menu(cat, page: int = 0, per_page: int = 0, user: dict | None = Non
         chunk = cat.products
         pages = 1
     for product in chunk:
-        name = product.name[:55].rstrip()
-        if len(product.name) > 55:
-            name += "…"
-        kb.row(_btn(name, f"prod:{product.code}"))
+        price = price_for(user, product.price)
+        label = f"{product.name} — {fmt_price(price)} ₽"
+        if len(label) > 64:
+            budget = 64 - len("…") - len(" — ") - len(f"{fmt_price(price)} ₽")
+            label = product.name[:budget].rstrip() + "…" + f" — {fmt_price(price)} ₽"
+        kb.row(_btn(label, f"prod:{product.code}"))
     nav = []
     if pages > 1:
         if page > 0:
