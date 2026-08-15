@@ -471,6 +471,7 @@ async def cb_admin_list(call: CallbackQuery):
 
 
 async def on_startup():
+    logger.info("БД: %s", "PostgreSQL (DATABASE_URL)" if os.getenv("DATABASE_URL") else "SQLite (файл data/bot.db)")
     await refresh_catalog()
     asyncio.create_task(catalog_updater())
 
