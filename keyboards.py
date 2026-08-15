@@ -33,22 +33,22 @@ def category_menu(cat) -> InlineKeyboardBuilder:
 
 
 def products_menu(cat, page: int = 0, per_page: int = 0, user: dict | None = None) -> InlineKeyboardBuilder:
-    """Кнопки-номера товаров. per_page=0 — полный список без страниц."""
+    """Кнопки-названия товаров. per_page=0 — полный список без страниц."""
     kb = InlineKeyboardBuilder()
     total = len(cat.products)
     if per_page:
         start = page * per_page
         chunk = cat.products[start : start + per_page]
-        start_idx = start + 1
         pages = max(1, (total + per_page - 1) // per_page)
     else:
         start = 0
         chunk = cat.products
-        start_idx = 1
         pages = 1
-    for i, product in enumerate(chunk, start=start_idx):
-        kb.add(_btn(str(i), f"prod:{product.code}"))
-    kb.adjust(5)
+    for product in chunk:
+        name = product.name[:55].rstrip()
+        if len(product.name) > 55:
+            name += "…"
+        kb.row(_btn(name, f"prod:{product.code}"))
     nav = []
     if pages > 1:
         if page > 0:

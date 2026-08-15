@@ -232,7 +232,12 @@ async def show_search_results(chat_id, results, query, user, page: int = 0):
 async def cb_menu(call: CallbackQuery):
     cmd = call.data.split(":", 1)[1]
     if cmd == "menu":
-        await show_main_menu(call.message.chat.id)
+        # Редактируем текущее сообщение, а не создаём новое
+        await render_call(
+            call,
+            "Главное меню:",
+            keyboards.main_menu(catalog, call.from_user.id == config.ADMIN_ID).as_markup(),
+        )
     elif cmd == "admin":
         if call.from_user.id != config.ADMIN_ID:
             await call.answer("⛔️ Нет доступа", show_alert=True)
