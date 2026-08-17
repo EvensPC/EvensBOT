@@ -125,3 +125,31 @@ def wholesalers() -> list[dict]:
 
 def clear_opt_request(user_id: int):
     _backend.execute("UPDATE users SET opt_requested = 0 WHERE user_id = ?", (user_id,))
+
+
+def sync_wholesalers_from_file(path: str) -> list[int]:
+    """Читает файл с ID оптовиков (по одному на строку) и выдаёт роль, если такой пользователь есть.
+
+    Возвращает список ID, которым роль была выдана в этот раз.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            ids = set()
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                try:
+                    ids.add(int(line))
+                except ValueError:
+                    continue
+    except FileNotFoundError:
+        return []
+
+    granted = []
+    for user_id in ids:
+        user = get_user(user_id)
+        if user is not None and user["role"] != "wholesaler":
+            set_role(user_id, "wholesaler")
+            granted.append(user_id)
+    return granted

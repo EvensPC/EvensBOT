@@ -12,3 +12,5 @@ PRICE_PER_PAGE = 10
 SEARCH_PER_PAGE = 10
 TEMP_MSG_TTL = 120  # секунд, через которые временные сообщения удаляются
 UPDATE_INTERVAL_SECONDS = 60 * 60  # 1 час
+WHOLESALERS_FILE = Path(__file__).parent / "wholesalers.txt"  # файл с ID оптовиков (по одному на строку)
+WHOLESALERS_CHECK_SECONDS = 30

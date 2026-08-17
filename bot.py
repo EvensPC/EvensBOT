@@ -109,6 +109,21 @@ async def catalog_updater():
         await refresh_catalog()
 
 
+async def wholesalers_file_checker():
+    while True:
+        await asyncio.sleep(config.WHOLESALERS_CHECK_SECONDS)
+        try:
+            granted = db.sync_wholesalers_from_file(str(config.WHOLESALERS_FILE))
+            for uid in granted:
+                await safe_send(
+                    uid,
+                    "✅ Ваш оптовый доступ подтверждён.\nТеперь цены отображаются по прайсу.",
+                )
+                logger.info("Оптовый доступ выдан по файлу: %s", uid)
+        except Exception as e:
+            logger.error("Ошибка проверки файла оптовиков: %s", e)
+
+
 # ---------------- Команды ----------------
 
 @dp.message(Command("start"))
@@ -526,6 +541,7 @@ async def on_startup():
     logger.info("БД: %s", "PostgreSQL (DATABASE_URL)" if os.getenv("DATABASE_URL") else "SQLite (файл data/bot.db)")
     await refresh_catalog()
     asyncio.create_task(catalog_updater())
+    asyncio.create_task(wholesalers_file_checker())
 
 
 async def _health(request):
