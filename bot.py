@@ -273,11 +273,18 @@ async def cb_menu(call: CallbackQuery):
         db.request_opt(call.from_user.id)
         await render_call(call, "📨 Заявка на оптовый доступ отправлена. Ожидайте подтверждения.")
         if config.ADMIN_ID:
+            uid = call.from_user.id
+            kb = keyboards.InlineKeyboardBuilder()
+            kb.row(
+                keyboards.InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"opt:approve:{uid}"),
+                keyboards.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"opt:reject:{uid}"),
+            )
             await safe_send(
                 config.ADMIN_ID,
                 f"🆕 Новая заявка на оптовый доступ!\n"
                 f"Пользователь: @{call.from_user.username or '-'}\n"
                 f"Имя: {call.from_user.full_name or '-'}\nID: {call.from_user.id}",
+                kb.as_markup(),
             )
     await call.answer()
 
