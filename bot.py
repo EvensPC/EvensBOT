@@ -502,14 +502,16 @@ async def cb_opt(call: CallbackQuery):
     user_id = int(user_id)
     user = db.get_user(user_id)
     if user is None:
-        await call.answer("Пользователь не найден", show_alert=True)
-        return
+        # Записи нет в этой БД (устаревшая кнопка / пересоздана база) — создаём запись и продолжаем.
+        logger.warning("opt:%s: пользователя %s нет в БД, создаю запись автоматически", action, user_id)
+        db.upsert_user(user_id, "", "")
     if action == "approve":
         db.set_role(user_id, "wholesaler")
         await safe_send(
             user_id,
             "✅ Поздравляем! Ваш оптовый доступ подтверждён.\nТеперь цены отображаются по прайсу.",
         )
+        await call.answer("Заявка подтверждена")
     elif action == "reject":
         db.set_role(user_id, "buyer")
         db.clear_opt_request(user_id)
