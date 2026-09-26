@@ -17,6 +17,11 @@ def _clean(value):
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def _price_sort_key(product: "Product"):
+    # Товары без цены (цена по запросу) — в конец списка.
+    return (1, 0) if product.price <= 0 else (0, product.price)
+
+
 @dataclass
 class Product:
     code: str
@@ -51,6 +56,7 @@ class Catalog:
         self._product_cat: dict[str, Category] = {}
 
     def _register(self, cat: Category):
+        cat.products.sort(key=_price_sort_key)
         self._index[cat.key] = cat
         for p in cat.products:
             self._product_cat[p.code] = cat
@@ -139,6 +145,8 @@ class Catalog:
 
         for root in self.roots:
             self._register(root)
+
+        self.all_products.sort(key=_price_sort_key)
 
     @property
     def updated(self) -> bool:
