@@ -6,9 +6,12 @@ import openpyxl
 import requests
 
 from categories import ROOT_CATEGORIES, EXCLUDED_ROOTS
+from price482 import Price482, Price482Item
 
 SPREADSHEET_ID = "1YloYvrGUqWY45khtZUVKbfmAupR1PotJhXUTTTP--JA"
 EXPORT_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=xlsx"
+
+USED_CATEGORY_MARKER = "Б/у"
 
 
 def _clean(value):
@@ -28,6 +31,7 @@ class Product:
     name: str
     price: int
     link: str = ""
+    price482: Price482Item | None = None
 
 
 @dataclass
@@ -54,12 +58,14 @@ class Catalog:
         self.all_products: list[Product] = []
         self._index: dict[str, Category] = {}
         self._product_cat: dict[str, Category] = {}
+        self._products: dict[str, Product] = {}
 
     def _register(self, cat: Category):
         cat.products.sort(key=_price_sort_key)
         self._index[cat.key] = cat
         for p in cat.products:
             self._product_cat[p.code] = cat
+            self._products[p.code] = p
         self.all_products.extend(cat.products)
         for child in cat.children:
             self._register(child)
@@ -69,6 +75,9 @@ class Catalog:
 
     def category_for(self, code: str) -> Category | None:
         return self._product_cat.get(code)
+
+    def find_product(self, code: str) -> Product | None:
+        return self._products.get(code)
 
     @staticmethod
     def _find_open_parent(stack):
@@ -81,7 +90,7 @@ class Catalog:
             return deepest.parent
         return deepest
 
-    def rebuild(self, workbook_bytes: bytes):
+    def rebuild(self, workbook_bytes: bytes, price482: Price482 | None = None):
         wb = openpyxl.load_workbook(io.BytesIO(workbook_bytes), data_only=True)
         ws = wb.active
 
@@ -89,6 +98,7 @@ class Catalog:
         self.all_products = []
         self._index = {}
         self._product_cat = {}
+        self._products = {}
 
         stack: list[Category] = []
         current_root: Category | None = None
@@ -139,6 +149,8 @@ class Catalog:
             target = stack[-1] if stack else current_root
             if target is None:
                 continue
+            if price482 is not None and USED_CATEGORY_MARKER not in target.path:
+                product.price482 = price482.match(product_name)
             target.products.append(product)
 
         self.roots = [root for root in self.roots if root.name not in EXCLUDED_ROOTS]

@@ -1,10 +1,26 @@
 from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
 
-from pricing import fmt_price, price_for
+import config
+from pricing import price_label
 
 
 def _btn(text: str, cb: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=cb)
+
+
+def _url_btn(text: str, url: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, url=url)
+
+
+def _product_label(index: int, product, user: dict | None, limit: int = 64) -> str:
+    """«1. Название — 12 500 ₽» с сохранением цены при обрезке названия."""
+    prefix = f"{index}. "
+    suffix = f" — {price_label(user, product.price)}"
+    budget = limit - len(prefix) - len(suffix)
+    name = product.name
+    if len(name) > budget:
+        name = name[: max(0, budget - 1)].rstrip() + "…"
+    return prefix + name + suffix
 
 
 def main_menu(catalog, is_admin: bool = False) -> InlineKeyboardBuilder:
@@ -32,24 +48,38 @@ def category_menu(cat) -> InlineKeyboardBuilder:
     return kb
 
 
-def products_menu(cat, page: int = 0, per_page: int = 0, user: dict | None = None) -> InlineKeyboardBuilder:
-    """Только навигация (список товаров показывается в тексте)."""
+def products_menu(cat, products, page: int = 0, per_page: int = 0, user: dict | None = None) -> InlineKeyboardBuilder:
+    """Товары страницы — кнопками, плюс навигация по страницам и назад."""
     kb = InlineKeyboardBuilder()
+    start = page * per_page
+    for i, product in enumerate(products, start=start + 1):
+        kb.row(_btn(_product_label(i, product, user), f"prod:{product.code}:{page}"))
+
     total = len(cat.products)
     if per_page:
-        start = page * per_page
         pages = max(1, (total + per_page - 1) // per_page)
-        nav = []
-        if page > 0:
-            nav.append(_btn("◀", f"pg:{cat.key}:{page - 1}"))
-        nav.append(_btn(f"{page + 1}/{pages}", f"info:{cat.key}"))
-        if start + per_page < total:
-            nav.append(_btn("▶", f"pg:{cat.key}:{page + 1}"))
-        kb.row(*nav)
+        if pages > 1:
+            nav = []
+            if page > 0:
+                nav.append(_btn("◀", f"pg:{cat.key}:{page - 1}"))
+            nav.append(_btn(f"{page + 1}/{pages}", f"info:{cat.key}"))
+            if start + per_page < total:
+                nav.append(_btn("▶", f"pg:{cat.key}:{page + 1}"))
+            kb.row(*nav)
     if cat.parent is not None:
         back_cb = f"cat:{cat.parent.key}"
     else:
         back_cb = "cmd:menu"
+    kb.row(_btn("← Назад", back_cb), _btn("🏠 Меню", "cmd:menu"))
+    return kb
+
+
+def product_card(product, back_cb: str = "cmd:menu") -> InlineKeyboardBuilder:
+    """Кнопки карточки товара."""
+    kb = InlineKeyboardBuilder()
+    if product.link:
+        kb.row(_url_btn("🛒 Открыть товар", product.link))
+    kb.row(_url_btn("📄 Прайс 482", config.PRICE_482_URL))
     kb.row(_btn("← Назад", back_cb), _btn("🏠 Меню", "cmd:menu"))
     return kb
 
@@ -59,9 +89,7 @@ def search_results(results, page: int = 0, per_page: int = 10, query: str = "", 
     start = page * per_page
     end = min(start + per_page, len(results))
     for i, product in enumerate(results[start:end], start=start + 1):
-        price = price_for(user, product.price)
-        label = f"{i}. {product.name[:55]} — {fmt_price(price)} ₽"
-        kb.row(_btn(label, f"prod:{product.code}"))
+        kb.row(_btn(_product_label(i, product, user), f"prod:{product.code}"))
     nav = []
     if page > 0:
         nav.append(_btn("◀", f"spg:{page - 1}:{query[:40]}"))
