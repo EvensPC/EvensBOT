@@ -579,6 +579,8 @@ async def cb_admin_list(call: CallbackQuery):
 async def on_startup():
     logger.info("БД: %s", "PostgreSQL (DATABASE_URL)" if os.getenv("DATABASE_URL") else "SQLite (файл data/bot.db)")
     report = db.wholesaler_file_report(str(config.WHOLESALERS_FILE))
+    if report["total"] == 0:
+        logger.warning("Файл %s не найден или пуст — оптовые роли из файла не выдаются", config.WHOLESALERS_FILE)
     logger.info(
         "Оптовики: в файле %s ID, из них уже в базе %s (остальные получат доступ при первом /start)",
         report["total"],
