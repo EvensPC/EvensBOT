@@ -123,6 +123,11 @@ def wholesalers() -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+def users_count() -> int:
+    row = _backend.execute("SELECT COUNT(*) FROM users").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 def clear_opt_request(user_id: int):
     _backend.execute("UPDATE users SET opt_requested = 0 WHERE user_id = ?", (user_id,))
 

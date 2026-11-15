@@ -231,6 +231,7 @@ async def cmd_sync(message: Message):
     await render(
         message.chat.id,
         "✅ Готово.\n"
+        f"БД: {'PostgreSQL' if os.getenv('DATABASE_URL') else 'SQLite (роли сбрасываются при рестарте)'}\n"
         f"Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.\n"
         f"Оптовиков в файле: {report['total']}, из них в базе: {report['known']}"
         + (f", выдано сейчас: {len(granted)}" if granted else "")
@@ -647,9 +648,22 @@ async def _health(request):
     return web.Response(text="OK")
 
 
+async def _status(request):
+    """Короткая диагностика без секретов: какая БД и сколько оптовиков видит бот."""
+    return web.json_response(
+        {
+            "db": "postgresql" if os.getenv("DATABASE_URL") else "sqlite",
+            "wholesalers_in_file": len(wholesaler_file_entries()),
+            "wholesalers_in_db": len(db.wholesalers()),
+            "users_in_db": db.users_count(),
+        }
+    )
+
+
 async def _run_http_server():
     app = web.Application()
     app.router.add_get("/", _health)
+    app.router.add_get("/status", _status)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8000"))
