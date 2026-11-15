@@ -108,6 +108,8 @@ def admin_panel_data():
             "\n⚠️ База SQLite: после деплоя/рестарта роли сбрасываются. "
             "Добавьте DATABASE_URL (PostgreSQL)."
         )
+    elif db.DB_ERROR:
+        header += f"\n❌ PostgreSQL недоступен: {db.DB_ERROR}\nРаботаю на SQLite — роли сбрасываются."
     if not requests:
         return header + "\n\nНет заявок на оптовый доступ.", keyboards.admin_menu().as_markup()
     return header + "\n\nЗаявки на оптовый доступ:", keyboards.admin_panel(requests).as_markup()
@@ -223,25 +225,37 @@ async def cmd_sync(message: Message):
         await delete_message(message.chat.id, message.message_id)
         await render(message.chat.id, "⛔️ Нет доступа.")
         return
+    await ensure_user(message)
     await delete_message(message.chat.id, message.message_id)
     await render(message.chat.id, "🔄 Обновляю каталог из Google Sheets…")
     await refresh_catalog()
-    granted = db.sync_wholesalers_from_file(str(config.WHOLESALERS_FILE))
-    report = db.wholesaler_file_report(str(config.WHOLESALERS_FILE))
-    await render(
-        message.chat.id,
-        "✅ Готово.\n"
-        f"БД: {'PostgreSQL' if os.getenv('DATABASE_URL') else 'SQLite (роли сбрасываются при рестарте)'}\n"
-        f"Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.\n"
-        f"Оптовиков в файле: {report['total']}, из них в базе: {report['known']}"
-        + (f", выдано сейчас: {len(granted)}" if granted else "")
-        + (
+    try:
+        granted = db.sync_wholesalers_from_file(str(config.WHOLESALERS_FILE))
+        report = db.wholesaler_file_report(str(config.WHOLESALERS_FILE))
+        if os.getenv("DATABASE_URL") and not db.DB_ERROR:
+            db_line = "PostgreSQL"
+        elif db.DB_ERROR:
+            db_line = f"SQLite, ошибка PostgreSQL: {db.DB_ERROR}"
+        else:
+            db_line = "SQLite (роли сбрасываются при рестарте)"
+        tail = (
             f"\n\nℹ️ {report['missing']} ID из файла ещё ни разу не открывали бота — "
             "доступ выдастся автоматически при первом /start."
             if report["missing"]
             else ""
-        ),
-    )
+        )
+        text = (
+            "✅ Готово.\n"
+            f"БД: {db_line}\n"
+            f"Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.\n"
+            f"Оптовиков в файле: {report['total']}, из них в базе: {report['known']}"
+            + (f", выдано сейчас: {len(granted)}" if granted else "")
+            + tail
+        )
+    except Exception as e:
+        logger.error("Ошибка /sync: %s", e)
+        text = f"⚠️ Каталог обновлён, но проверка оптовиков упала:\n{type(e).__name__}: {e}"
+    await render(message.chat.id, text)
 
 
 @dp.message(Command("admin"))
@@ -250,8 +264,13 @@ async def cmd_admin(message: Message):
         await delete_message(message.chat.id, message.message_id)
         await render(message.chat.id, "⛔️ Нет доступа.")
         return
+    await ensure_user(message)
     await delete_message(message.chat.id, message.message_id)
-    text, markup = admin_panel_data()
+    try:
+        text, markup = admin_panel_data()
+    except Exception as e:
+        logger.error("Ошибка админ-панели: %s", e)
+        text, markup = f"⚠️ Ошибка базы данных:\n{type(e).__name__}: {e}", keyboards.admin_menu().as_markup()
     await render(message.chat.id, text, markup)
 
 
@@ -625,20 +644,30 @@ async def cb_admin_list(call: CallbackQuery):
     if call.from_user.id != config.ADMIN_ID:
         await call.answer("⛔️ Нет доступа", show_alert=True)
         return
-    await render_call(call, admin_wholesalers_text(), keyboards.wholesalers_menu().as_markup())
+    try:
+        text = admin_wholesalers_text()
+    except Exception as e:
+        logger.error("Ошибка списка оптовиков: %s", e)
+        text = f"⚠️ Ошибка базы данных:\n{type(e).__name__}: {e}"
+    await render_call(call, text, keyboards.wholesalers_menu().as_markup())
     await call.answer()
 
 
 async def on_startup():
-    logger.info("БД: %s", "PostgreSQL (DATABASE_URL)" if os.getenv("DATABASE_URL") else "SQLite (файл data/bot.db)")
-    report = db.wholesaler_file_report(str(config.WHOLESALERS_FILE))
-    if report["total"] == 0:
-        logger.warning("Файл %s не найден или пуст — оптовые роли из файла не выдаются", config.WHOLESALERS_FILE)
-    logger.info(
-        "Оптовики: в файле %s ID, из них уже в базе %s (остальные получат доступ при первом /start)",
-        report["total"],
-        report["known"],
-    )
+    try:
+        logger.info("БД: %s", "PostgreSQL (DATABASE_URL)" if os.getenv("DATABASE_URL") else "SQLite (файл data/bot.db)")
+        if db.DB_ERROR:
+            logger.error("PostgreSQL недоступен, временно используется SQLite: %s", db.DB_ERROR)
+        report = db.wholesaler_file_report(str(config.WHOLESALERS_FILE))
+        if report["total"] == 0:
+            logger.warning("Файл %s не найден или пуст — оптовые роли из файла не выдаются", config.WHOLESALERS_FILE)
+        logger.info(
+            "Оптовики: в файле %s ID, из них уже в базе %s (остальные получат доступ при первом /start)",
+            report["total"],
+            report["known"],
+        )
+    except Exception as e:
+        logger.error("Ошибка диагностики при старте: %s", e)
     await refresh_catalog()
     asyncio.create_task(catalog_updater())
     asyncio.create_task(wholesalers_file_checker())
@@ -652,7 +681,8 @@ async def _status(request):
     """Короткая диагностика без секретов: какая БД и сколько оптовиков видит бот."""
     return web.json_response(
         {
-            "db": "postgresql" if os.getenv("DATABASE_URL") else "sqlite",
+            "db": "sqlite" if db.DB_ERROR else ("postgresql" if os.getenv("DATABASE_URL") else "sqlite"),
+            "db_error": db.DB_ERROR or None,
             "wholesalers_in_file": len(wholesaler_file_entries()),
             "wholesalers_in_db": len(db.wholesalers()),
             "users_in_db": db.users_count(),

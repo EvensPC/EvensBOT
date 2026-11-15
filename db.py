@@ -1,9 +1,13 @@
+import logging
 import os
 import sqlite3
 import threading
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+DB_ERROR = ""
 
 
 class _SqliteBackend:
@@ -40,9 +44,16 @@ class _SqliteBackend:
 
 class _PostgresBackend:
     def __init__(self, url: str):
-        import psycopg
+        self._url = url
+        self._conn = None
+        self._connect()
 
-        self._conn = psycopg.connect(url)
+    def _connect(self):
+        import psycopg
+        from psycopg.rows import dict_row
+
+        # dict_row обязателен: код дальше работает со строками как со словарями.
+        self._conn = psycopg.connect(self._url, row_factory=dict_row)
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -56,6 +67,11 @@ class _PostgresBackend:
         )
         self._conn.commit()
 
+    def _run(self, sql: str, params: tuple):
+        cur = self._conn.execute(sql, params)
+        self._conn.commit()
+        return cur
+
     def execute(self, sql: str, params: tuple = ()):
         def _map(value):
             if value is True or value == 1:
@@ -66,12 +82,32 @@ class _PostgresBackend:
 
         sql = sql.replace("?", "%s")
         mapped = tuple(_map(p) for p in params)
-        cur = self._conn.execute(sql, mapped)
-        self._conn.commit()
-        return cur
+        try:
+            return self._run(sql, mapped)
+        except Exception as e:
+            # База могла перезапуститься (бесплатный тариф Render) — пробуем переподключиться.
+            logger.warning("PostgreSQL: ошибка запроса (%s), переподключаюсь…", e)
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._connect()
+            return self._run(sql, mapped)
 
 
-_backend = _PostgresBackend(DATABASE_URL) if DATABASE_URL else _SqliteBackend()
+if DATABASE_URL:
+    try:
+        _backend = _PostgresBackend(DATABASE_URL)
+    except Exception as e:  # бот должен запуститься даже при недоступной БД
+        DB_ERROR = f"{type(e).__name__}: {e}"
+        logger.error(
+            "Не удалось подключиться к PostgreSQL (%s). Работаю на SQLite — "
+            "роли оптовиков будут сбрасываться при рестарте.",
+            DB_ERROR,
+        )
+        _backend = _SqliteBackend()
+else:
+    _backend = _SqliteBackend()
 
 
 def _row_to_dict(row) -> dict | None:
@@ -124,8 +160,10 @@ def wholesalers() -> list[dict]:
 
 
 def users_count() -> int:
-    row = _backend.execute("SELECT COUNT(*) FROM users").fetchone()
-    return int(row[0]) if row is not None else 0
+    row = _backend.execute("SELECT COUNT(*) AS c FROM users").fetchone()
+    if row is None:
+        return 0
+    return int(row["c"])
 
 
 def clear_opt_request(user_id: int):
