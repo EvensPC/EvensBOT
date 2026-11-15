@@ -6,7 +6,6 @@ from html import escape
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
-from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command
 from aiogram.types import BotCommand, CallbackQuery, Message
 
@@ -14,15 +13,12 @@ import config
 import db
 import keyboards
 from catalog import Catalog, fetch_xlsx_bytes
-from price482 import Price482
-from price482 import fetch_xlsx_bytes as fetch_price482_bytes
 from pricing import fmt_price, price_for
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 catalog = Catalog()
-price482 = Price482()
 bot: Bot
 dp = Dispatcher()
 
@@ -101,24 +97,10 @@ async def safe_send(chat_id, text, reply_markup=None):
 async def refresh_catalog():
     try:
         data = fetch_xlsx_bytes()
-    except Exception as e:
-        logger.error("Не удалось скачать каталог: %s", e)
-        return
-    try:
-        price482.rebuild(fetch_price482_bytes())
-    except Exception as e:
-        logger.error("Не удалось обновить прайс 482 (остаются прежние данные): %s", e)
-    try:
-        catalog.rebuild(data, price482)
+        catalog.rebuild(data)
+        logger.info("Каталог обновлён: %d корневых категорий, %d товаров", len(catalog.roots), len(catalog.all_products))
     except Exception as e:
         logger.error("Не удалось обновить каталог: %s", e)
-        return
-    logger.info(
-        "Каталог обновлён: %d корневых категорий, %d товаров, %d с ценой 482",
-        len(catalog.roots),
-        len(catalog.all_products),
-        sum(1 for p in catalog.all_products if p.price482 is not None),
-    )
 
 
 async def catalog_updater():
@@ -186,12 +168,7 @@ async def cmd_sync(message: Message):
     await delete_message(message.chat.id, message.message_id)
     await render(message.chat.id, "🔄 Обновляю каталог из Google Sheets…")
     await refresh_catalog()
-    matched = sum(1 for p in catalog.all_products if p.price482 is not None)
-    await render(
-        message.chat.id,
-        f"✅ Готово. Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}, "
-        f"с ценой 482: {matched}.",
-    )
+    await render(message.chat.id, f"✅ Готово. Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.")
 
 
 @dp.message(Command("admin"))
@@ -348,24 +325,109 @@ async def cb_category(call: CallbackQuery):
     await call.answer()
 
 
+def _common_prefix_tokens(names: list[str]) -> list[str]:
+    """Общее начало названий товаров (напр. «Видеокарта»), чтобы убрать повтор."""
+    tokens = [n.split() for n in names if n.strip()]
+    if len(tokens) < 3:
+        return []
+    common = []
+    for parts in zip(*tokens):
+        if all(p == parts[0] for p in parts):
+            common.append(parts[0])
+        else:
+            break
+    return common[:3]
+
+
+def _is_article_token(t: str) -> bool:
+    """Артикул: есть цифра и (дефис ИЛИ длинный капс-код)."""
+    if not any(c.isdigit() for c in t) or not any(c.isalpha() for c in t):
+        return False
+    if "-" in t:
+        return True
+    return t.isupper() and len(t) >= 6
+
+
+def _is_filler_token(t: str) -> bool:
+    """Короткое слово-капс внутри артикула (OC, ICE, SFF...)."""
+    return not any(c.isdigit() for c in t) and t.isupper() and len(t) <= 5
+
+
+def _strip_article(name: str) -> str:
+    """Убирает артикул в конце названия, если он есть."""
+    toks = name.split()
+    n = len(toks)
+    idx = n
+    seen_article = False
+    for i in range(n - 1, -1, -1):
+        t = toks[i]
+        if _is_article_token(t):
+            seen_article = True
+            idx = i
+        elif seen_article and _is_filler_token(t):
+            # включаем слово-капс только если слева есть ещё артикул (сэндвич)
+            if any(_is_article_token(x) for x in toks[:i]):
+                idx = i
+            else:
+                break
+        else:
+            break
+    if idx == n:
+        return name
+    return " ".join(toks[:idx])
+
+
 async def show_products(call: CallbackQuery, cat, page: int = 0):
     user = db.get_user(call.from_user.id)
     total = len(cat.products)
 
-    if not total:
+    if not cat.products:
         await call.answer("Здесь пока нет товаров", show_alert=True)
         return
 
+    common = _common_prefix_tokens([p.name for p in cat.products])
+
+    def format_item(p) -> str:
+        name = p.name
+        toks = name.split()
+        if common and len(toks) > len(common):
+            name = " ".join(toks[len(common):])
+        price = fmt_price(price_for(user, p.price))
+        # Максимальная ширина строки с учётом цены, чтобы не переносилось
+        max_line = 52
+        budget = max_line - len("🔹 ") - len(" — ") - len(price) - len(" ₽")
+        # Убираем артикул ТОЛЬКО если без него название укладывается в строку
+        stripped = _strip_article(name)
+        if len(name) > budget and len(stripped) <= budget:
+            name = stripped
+        name = escape(name)
+        return f"🔹 {name} — <code>{price}\u00A0₽</code>"
+
+    def build(chunk, extra: str | None = None):
+        lines = [f"🎮 <b>{escape(cat.name)}</b> · {total}"]
+        if extra:
+            lines.append(extra)
+        lines.append("")
+        for p in chunk:
+            lines.append(format_item(p))
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
+    full_text = build(cat.products)
+
+    # Полный список, если влезает в лимит сообщения
+    if len(full_text) <= 4000:
+        markup = keyboards.products_menu(cat, page=0, per_page=0, user=user)
+        await render_call(call, full_text, markup.as_markup(), parse_mode="HTML")
+        return
+
+    # Очень большая подгруппа — постранично
     per_page = config.PRICE_PER_PAGE
     pages = max(1, (total + per_page - 1) // per_page)
-    page = max(0, min(page, pages - 1))
-    chunk = cat.products[page * per_page : (page + 1) * per_page]
-
-    text = f"🎮 <b>{escape(cat.path)}</b> · {total}"
-    if pages > 1:
-        text += f"\nСтраница {page + 1}/{pages}"
-    text += "\n\nВыберите товар:"
-    markup = keyboards.products_menu(cat, chunk, page, per_page, user)
+    start = page * per_page
+    chunk = cat.products[start : start + per_page]
+    text = build(chunk, f"Страница {page + 1}/{pages}")
+    markup = keyboards.products_menu(cat, page, per_page, user)
     await render_call(call, text, markup.as_markup(), parse_mode="HTML")
 
 
@@ -385,79 +447,33 @@ async def cb_info(call: CallbackQuery):
     await call.answer()
 
 
-def _signed_price(value: int) -> str:
-    if value > 0:
-        return f"+{fmt_price(value)}"
-    if value < 0:
-        return f"−{fmt_price(-value)}"
-    return "0"
-
-
-def _signed_percent(value: float) -> str:
-    text = f"{abs(value):.1f}".replace(".", ",")
-    if value > 0:
-        return f"+{text}%"
-    if value < 0:
-        return f"−{text}%"
-    return "0%"
-
-
-def product_card_text(product, user: dict | None) -> str:
-    price = price_for(user, product.price)
-    cat = catalog.category_for(product.code)
-
-    lines = [
-        f"📦 <b>{escape(product.name)}</b>",
-        "",
-        f"Артикул: <code>{escape(product.code)}</code>",
-    ]
-    if cat is not None:
-        lines.append(f"Категория: {escape(cat.path)}")
-    lines.append("")
-
-    if product.price > 0:
-        lines.append(f"Наша цена: <b>{fmt_price(price)}\u00A0₽</b>")
-    else:
-        lines.append("Наша цена: по запросу")
-
-    item = product.price482
-    if item is None:
-        lines.append("Прайс 482: нет в прайсе")
-        return "\n".join(lines)
-
-    lines.append(f"📊 Прайс 482: {fmt_price(item.price)}\u00A0₽ · код {escape(item.code)}")
-    if product.price > 0 and item.price > 0:
-        diff = price - item.price
-        percent = diff / item.price * 100
-        icon = "📈" if diff > 0 else ("📉" if diff < 0 else "✅")
-        lines.append(f"{icon} Разница: <b>{_signed_price(diff)}\u00A0₽</b> ({_signed_percent(percent)})")
-    lines.append(f"\n<i>В прайсе 482: {escape(item.name)}</i>")
-    return "\n".join(lines)
-
-
 @dp.callback_query(F.data.startswith("prod:"))
 async def cb_product(call: CallbackQuery):
-    parts = call.data.split(":")
-    code = parts[1]
-    page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    code = call.data.split(":", 1)[1]
     user = db.get_user(call.from_user.id)
-    product = catalog.find_product(code)
+    product = None
+    for p in catalog.all_products:
+        if p.code == code:
+            product = p
+            break
     if product is None:
         await call.answer("Товар не найден", show_alert=True)
         return
+    price = price_for(user, product.price)
+    text = f"📦 {product.name}\n\nАртикул: {product.code}\nЦена: {fmt_price(price)} ₽"
+    if product.link:
+        from urllib.parse import urlencode
+
+        tg_url = "https://t.me/share/url?" + urlencode(
+            {"url": product.link, "text": f"{product.name} — {fmt_price(price)} ₽"}
+        )
+        text += f"\n\n⬇️ [Открыть ссылку]({tg_url})"
+    kb = keyboards.InlineKeyboardBuilder()
     cat = catalog.category_for(product.code)
-    if cat is None:
-        back_cb = "cmd:menu"
-    elif page > 0:
-        back_cb = f"pg:{cat.key}:{page}"
-    else:
-        back_cb = f"cat:{cat.key}"
-    await render_call(
-        call,
-        product_card_text(product, user),
-        keyboards.product_card(product, back_cb).as_markup(),
-        parse_mode="HTML",
-    )
+    back_cb = f"cat:{cat.key}" if cat is not None else "cmd:menu"
+    kb.row(keyboards.InlineKeyboardButton(text="🏠 Меню", callback_data="cmd:menu"))
+    kb.row(keyboards.InlineKeyboardButton(text="← Назад", callback_data=back_cb))
+    await render_call(call, text, kb.as_markup())
     await call.answer()
 
 
@@ -545,35 +561,15 @@ async def _run_http_server():
     logger.info("HTTP-сервер запущен на порту %s", port)
 
 
-async def _run_polling():
-    """Ждёт появления связи с Telegram и запускает polling (не падая при старте без сети)."""
-    while True:
-        try:
-            await bot.get_me()
-            break
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.warning("Telegram API недоступен: %s. Повтор через 30 с…", e)
-            await asyncio.sleep(30)
-    await dp.start_polling(bot)
-
-
 async def main():
     global bot
     if not config.BOT_TOKEN:
         logger.error("BOT_TOKEN не задан. Создайте файл .env рядом с ботом или укажите переменные окружения.")
         return
-    session = AiohttpSession(proxy=config.PROXY_URL) if config.PROXY_URL else None
-    if session is not None:
-        logger.info("Для Telegram API используется прокси из PROXY_URL")
-    bot = Bot(token=config.BOT_TOKEN, session=session)
-    try:
-        await bot.set_my_commands(BOT_COMMANDS)
-    except Exception as e:
-        logger.warning("Не удалось установить команды бота (нет связи с Telegram?): %s", e)
+    bot = Bot(token=config.BOT_TOKEN)
+    await bot.set_my_commands(BOT_COMMANDS)
     dp.startup.register(on_startup)
-    await asyncio.gather(_run_http_server(), _run_polling())
+    await asyncio.gather(_run_http_server(), dp.start_polling(bot))
 
 
 if __name__ == "__main__":
