@@ -72,11 +72,45 @@ async def show_main_menu(chat_id: int, text: str = "Главное меню:"):
     await render(chat_id, text, keyboards.main_menu(catalog, chat_id == config.ADMIN_ID).as_markup())
 
 
+def wholesaler_file_entries() -> list[tuple[int, str]]:
+    """Пары (ID, подпись) из wholesalers.txt — подпись берётся из комментария над ID."""
+    entries: list[tuple[int, str]] = []
+    name = ""
+    try:
+        with open(config.WHOLESALERS_FILE, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    name = line.lstrip("#").strip()
+                    continue
+                try:
+                    entries.append((int(line), name))
+                except ValueError:
+                    pass
+                name = ""
+    except OSError:
+        return []
+    return entries
+
+
 def admin_panel_data():
     requests = db.pending_requests()
+    file_entries = wholesaler_file_entries()
+    in_base = len(db.wholesalers())
+    header = (
+        "⚙️ Админ-панель\n\n"
+        f"👥 Оптовики: в файле {len(file_entries)}, в базе {in_base}"
+    )
+    if not os.getenv("DATABASE_URL"):
+        header += (
+            "\n⚠️ База SQLite: после деплоя/рестарта роли сбрасываются. "
+            "Добавьте DATABASE_URL (PostgreSQL)."
+        )
     if not requests:
-        return "⚙️ Админ-панель\n\nНет заявок на оптовый доступ.", keyboards.admin_menu().as_markup()
-    return "⚙️ Админ-панель\n\nЗаявки на оптовый доступ:", keyboards.admin_panel(requests).as_markup()
+        return header + "\n\nНет заявок на оптовый доступ.", keyboards.admin_menu().as_markup()
+    return header + "\n\nЗаявки на оптовый доступ:", keyboards.admin_panel(requests).as_markup()
 
 
 _wh_ids_cache: tuple[float, set[int]] | None = None
@@ -107,6 +141,7 @@ async def ensure_user(message: Message) -> dict:
         db.set_role(user_id, "wholesaler")
         user = db.get_user(user_id) or user
         logger.info("Оптовый доступ выдан сразу по файлу: %s", user_id)
+        await safe_send(user_id, "✅ Оптовый доступ активирован: цены показываются по прайсу.")
     return user
 
 
@@ -558,21 +593,38 @@ async def cb_opt(call: CallbackQuery):
     await call.answer()
 
 
+def admin_wholesalers_text() -> str:
+    """Список оптовиков: и из wholesalers.txt (с прогрессом), и выданных вручную."""
+    entries = wholesaler_file_entries()
+    db_users = {u["user_id"]: u for u in db.wholesalers()}
+    file_ids = {uid for uid, _ in entries}
+    lines = [f"🧾 Оптовики: в файле {len(entries)}, в базе {len(db_users)}", ""]
+    if entries:
+        lines.append("📄 Из wholesalers.txt:")
+        for user_id, label in entries:
+            user = db_users.get(user_id)
+            mark = "✅ доступ выдан" if user is not None else "⏳ ещё не заходил в бота"
+            name = label or (user["full_name"] if user else "") or "-"
+            lines.append(f"• {name}\n  ID: {user_id} — {mark}")
+        lines.append("")
+    manual = [u for uid, u in db_users.items() if uid not in file_ids]
+    if manual:
+        lines.append("👤 Доступ выдан вручную:")
+        for u in manual:
+            name = u["full_name"] or u["username"] or "-"
+            uname = f"@{u['username']}" if u["username"] else ""
+            lines.append(f"• {name} {uname}\n  ID: {u['user_id']}")
+    if not entries and not manual:
+        lines.append("Оптовиков пока нет.")
+    return "\n".join(lines)
+
+
 @dp.callback_query(F.data.startswith("admin:list"))
 async def cb_admin_list(call: CallbackQuery):
     if call.from_user.id != config.ADMIN_ID:
         await call.answer("⛔️ Нет доступа", show_alert=True)
         return
-    users = db.wholesalers()
-    if not users:
-        await render_call(call, "Оптовиков пока нет.", keyboards.wholesalers_menu().as_markup())
-    else:
-        lines = [f"🧾 Оптовики ({len(users)}):", ""]
-        for u in users:
-            name = u["full_name"] or u["username"] or "-"
-            uname = f"@{u['username']}" if u["username"] else ""
-            lines.append(f"• {name} {uname}\n  ID: {u['user_id']}")
-        await render_call(call, "\n".join(lines), keyboards.wholesalers_menu().as_markup())
+    await render_call(call, admin_wholesalers_text(), keyboards.wholesalers_menu().as_markup())
     await call.answer()
 
 
