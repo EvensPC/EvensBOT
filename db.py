@@ -127,11 +127,8 @@ def clear_opt_request(user_id: int):
     _backend.execute("UPDATE users SET opt_requested = 0 WHERE user_id = ?", (user_id,))
 
 
-def sync_wholesalers_from_file(path: str) -> list[int]:
-    """Читает файл с ID оптовиков (по одному на строку) и выдаёт роль, если такой пользователь есть.
-
-    Возвращает список ID, которым роль была выдана в этот раз.
-    """
+def read_wholesaler_ids(path: str) -> set[int]:
+    """Читает файл с ID оптовиков (по одному на строку, # — комментарий)."""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             ids = set()
@@ -143,8 +140,27 @@ def sync_wholesalers_from_file(path: str) -> list[int]:
                     ids.add(int(line))
                 except ValueError:
                     continue
+        return ids
     except FileNotFoundError:
-        return []
+        return set()
+
+
+def wholesaler_file_report(path: str) -> dict:
+    """Сводка по файлу оптовиков: сколько ID в файле и сколько из них уже есть в базе."""
+    ids = read_wholesaler_ids(path)
+    known = 0
+    for user_id in ids:
+        if get_user(user_id) is not None:
+            known += 1
+    return {"total": len(ids), "known": known, "missing": len(ids) - known}
+
+
+def sync_wholesalers_from_file(path: str) -> list[int]:
+    """Читает файл с ID оптовиков (по одному на строку) и выдаёт роль, если такой пользователь есть.
+
+    Возвращает список ID, которым роль была выдана в этот раз.
+    """
+    ids = read_wholesaler_ids(path)
 
     granted = []
     for user_id in ids:

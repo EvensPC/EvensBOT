@@ -79,12 +79,35 @@ def admin_panel_data():
     return "⚙️ Админ-панель\n\nЗаявки на оптовый доступ:", keyboards.admin_panel(requests).as_markup()
 
 
+_wh_ids_cache: tuple[float, set[int]] | None = None
+
+
+def wholesaler_ids_from_file() -> set[int]:
+    """ID оптовиков из wholesalers.txt (с кэшем по времени изменения файла)."""
+    global _wh_ids_cache
+    try:
+        mtime = config.WHOLESALERS_FILE.stat().st_mtime
+    except OSError:
+        return set()
+    if _wh_ids_cache is None or _wh_ids_cache[0] != mtime:
+        _wh_ids_cache = (mtime, db.read_wholesaler_ids(str(config.WHOLESALERS_FILE)))
+    return _wh_ids_cache[1]
+
+
 async def ensure_user(message: Message) -> dict:
-    return db.upsert_user(
-        message.from_user.id,
+    user_id = message.from_user.id
+    user = db.upsert_user(
+        user_id,
         message.from_user.username or "",
         message.from_user.full_name or "",
     )
+    # Оптовик из wholesalers.txt получает роль сразу при первом же действии в боте,
+    # не дожидаясь фоновой проверки файла.
+    if user.get("role") != "wholesaler" and user_id in wholesaler_ids_from_file():
+        db.set_role(user_id, "wholesaler")
+        user = db.get_user(user_id) or user
+        logger.info("Оптовый доступ выдан сразу по файлу: %s", user_id)
+    return user
 
 
 async def safe_send(chat_id, text, reply_markup=None):
@@ -111,7 +134,6 @@ async def catalog_updater():
 
 async def wholesalers_file_checker():
     while True:
-        await asyncio.sleep(config.WHOLESALERS_CHECK_SECONDS)
         try:
             granted = db.sync_wholesalers_from_file(str(config.WHOLESALERS_FILE))
             for uid in granted:
@@ -122,6 +144,7 @@ async def wholesalers_file_checker():
                 logger.info("Оптовый доступ выдан по файлу: %s", uid)
         except Exception as e:
             logger.error("Ошибка проверки файла оптовиков: %s", e)
+        await asyncio.sleep(config.WHOLESALERS_CHECK_SECONDS)
 
 
 # ---------------- Команды ----------------
@@ -168,7 +191,21 @@ async def cmd_sync(message: Message):
     await delete_message(message.chat.id, message.message_id)
     await render(message.chat.id, "🔄 Обновляю каталог из Google Sheets…")
     await refresh_catalog()
-    await render(message.chat.id, f"✅ Готово. Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.")
+    granted = db.sync_wholesalers_from_file(str(config.WHOLESALERS_FILE))
+    report = db.wholesaler_file_report(str(config.WHOLESALERS_FILE))
+    await render(
+        message.chat.id,
+        "✅ Готово.\n"
+        f"Категорий: {len(catalog.roots)}, товаров: {len(catalog.all_products)}.\n"
+        f"Оптовиков в файле: {report['total']}, из них в базе: {report['known']}"
+        + (f", выдано сейчас: {len(granted)}" if granted else "")
+        + (
+            f"\n\nℹ️ {report['missing']} ID из файла ещё ни разу не открывали бота — "
+            "доступ выдастся автоматически при первом /start."
+            if report["missing"]
+            else ""
+        ),
+    )
 
 
 @dp.message(Command("admin"))
@@ -541,6 +578,12 @@ async def cb_admin_list(call: CallbackQuery):
 
 async def on_startup():
     logger.info("БД: %s", "PostgreSQL (DATABASE_URL)" if os.getenv("DATABASE_URL") else "SQLite (файл data/bot.db)")
+    report = db.wholesaler_file_report(str(config.WHOLESALERS_FILE))
+    logger.info(
+        "Оптовики: в файле %s ID, из них уже в базе %s (остальные получат доступ при первом /start)",
+        report["total"],
+        report["known"],
+    )
     await refresh_catalog()
     asyncio.create_task(catalog_updater())
     asyncio.create_task(wholesalers_file_checker())
