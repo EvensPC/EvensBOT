@@ -2,3 +2,30 @@
 # Бот проверит файл в течение ~30 секунд и выдаст им оптовый доступ автоматически.
 # Пример:
 # 123456789
+
+# Dmitry Inshakov @inshakov
+88000166
+# Mr. ЭDO @misteredo
+287446569
+# Владимир Новиков (CEO E2BY) @CEO_E2BY
+302662743
+# _ @Waste4Time
+512297478
+# Русик @tazoviebon88
+713445690
+# -
+855724126
+# Макс @Zakazmobila
+1213161087
+# George Kabzonov @Kabzonov
+1531494593
+# HAYKAN PC @haykan_pc
+6638387880
+# Evens PC @EvensPC
+6821559906
+# Александр
+7305755551
+# For3ver @forr3ver
+7621565912
+# Haykan 256 @HAYKAN256
+8155790403

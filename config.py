@@ -8,7 +8,7 @@ load_dotenv(Path(__file__).parent / ".env")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0") or 0)
 PROXY_URL = os.getenv("PROXY_URL", "").strip()
-RETAIL_MARKUP = 1.15
+RETAIL_MARKUP = 1.10
 PRICE_PER_PAGE = 20
 SEARCH_PER_PAGE = 10
 TEMP_MSG_TTL = 120  # секунд, через которые временные сообщения удаляются
